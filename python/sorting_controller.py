@@ -10,6 +10,9 @@ from enum import Enum, auto
 from qarm_kinematics import forward_kinematics, inverse_kinematics
 from trajectory import cubic_trajectory
 
+GRIP_CLOSE = 0.65
+GRIP_OPEN = 0.10
+
 
 class State(Enum):
     INIT = auto()
@@ -134,7 +137,7 @@ class FruitSortingController:
 
         elif self.state == State.INIT:
             if self._move_complete(t):
-                self._execute_position(self._traj_end_pos, 0.0)
+                self._execute_position(self._traj_end_pos, GRIP_OPEN)
                 if not self.fruit_queue:
                     self.state = State.DONE
                 else:
@@ -152,7 +155,7 @@ class FruitSortingController:
             self._print_state(f"Approaching {self.current_target['type']}")
 
         elif self.state == State.APPROACH:
-            if self._track_trajectory(t, gripper_val=0.0):
+            if self._track_trajectory(t, gripper_val=GRIP_OPEN):
                 pick_pos = self.current_target['pos'].copy()
                 pick_pos[2] = self.PICK_Z
                 self._start_move(ee_pos, pick_pos, self.T_PICK)
@@ -160,13 +163,13 @@ class FruitSortingController:
                 self._print_state("Descending to pick")
 
         elif self.state == State.DESCEND:
-            if self._track_trajectory(t, gripper_val=0.0):
+            if self._track_trajectory(t, gripper_val=GRIP_OPEN):
                 self._dwell_start = time.time()
                 self.state = State.CLOSE_GRIPPER
                 self._print_state("Closing gripper")
 
         elif self.state == State.CLOSE_GRIPPER:
-            self._execute_position(ee_pos, 1.0)
+            self._execute_position(ee_pos, GRIP_CLOSE)
             if time.time() - self._dwell_start >= self.T_DWELL:
                 ascend_pos = ee_pos.copy()
                 ascend_pos[2] = self.SAFE_Z
@@ -175,7 +178,7 @@ class FruitSortingController:
                 self._print_state("Ascending with fruit")
 
         elif self.state == State.ASCEND_PICK:
-            if self._track_trajectory(t, gripper_val=1.0):
+            if self._track_trajectory(t, gripper_val=GRIP_CLOSE):
                 basket_above = self.target_basket.copy()
                 basket_above[2] = self.SAFE_Z
                 self._start_move(ee_pos, basket_above, self.T_TRANSIT)
@@ -183,7 +186,7 @@ class FruitSortingController:
                 self._print_state(f"Moving to {self.current_target['type']} basket")
 
         elif self.state == State.MOVE_TO_BASKET:
-            if self._track_trajectory(t, gripper_val=1.0):
+            if self._track_trajectory(t, gripper_val=GRIP_CLOSE):
                 place_pos = self.target_basket.copy()
                 place_pos[2] = self.PLACE_Z
                 self._start_move(ee_pos, place_pos, self.T_APPROACH)
@@ -191,13 +194,13 @@ class FruitSortingController:
                 self._print_state("Descending to basket")
 
         elif self.state == State.DESCEND_PLACE:
-            if self._track_trajectory(t, gripper_val=1.0):
+            if self._track_trajectory(t, gripper_val=GRIP_CLOSE):
                 self._dwell_start = time.time()
                 self.state = State.OPEN_GRIPPER
                 self._print_state("Opening gripper")
 
         elif self.state == State.OPEN_GRIPPER:
-            self._execute_position(ee_pos, 0.0)
+            self._execute_position(ee_pos, GRIP_OPEN)
             if time.time() - self._dwell_start >= self.T_DWELL:
                 self.sorted_count += 1
                 ascend_pos = ee_pos.copy()
@@ -210,7 +213,7 @@ class FruitSortingController:
                 )
 
         elif self.state == State.ASCEND_PLACE:
-            if self._track_trajectory(t, gripper_val=0.0):
+            if self._track_trajectory(t, gripper_val=GRIP_OPEN):
                 # Return home, then check for more fruits
                 self._start_move(ee_pos, self.HOME_POS, self.T_TRANSIT)
                 self.state = State.INIT

@@ -27,6 +27,7 @@ import json
 import os
 import sys
 import time
+import threading
 import traceback
 from datetime import datetime
 
@@ -108,7 +109,7 @@ INTERP_HZ = 100.0
 #   0.0 drives the servo past its physical open endstop and holds it
 #       there during the rest of the interpolation  -> open overload (-1289)
 # Use safer clamps on both ends.
-GRIP_CLOSE_CMD = 0.65
+GRIP_CLOSE_CMD = 0.725
 GRIP_OPEN_CMD  = 0.10
 # If the end-effector is below this Z (m), warn before closing.
 Z_LOW_WARN = 0.01
@@ -119,6 +120,36 @@ KEY_UP = 2490368
 KEY_DOWN = 2621440
 KEY_LEFT = 2424832
 KEY_RIGHT = 2555904
+
+
+class CameraThread:
+    """Background thread for continuous camera frame capture."""
+
+    def __init__(self, cam):
+        self.cam = cam
+        self._frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        self._lock = threading.Lock()
+        self._running = True
+        self._thread = threading.Thread(target=self._capture_loop, daemon=True)
+        self._thread.start()
+
+    def _capture_loop(self):
+        while self._running:
+            try:
+                color, _ = self.cam.read()
+                with self._lock:
+                    self._frame = color.copy()
+            except Exception:
+                pass
+            time.sleep(0.016)  # ~60 fps
+
+    def get_frame(self):
+        with self._lock:
+            return self._frame.copy()
+
+    def stop(self):
+        self._running = False
+        self._thread.join(timeout=1.0)
 
 
 def load_points():
@@ -145,7 +176,7 @@ def pose_from_joints(phi):
 
 
 def interp_move(q, phi_from, phi_to, grip_from, grip_to, seconds,
-                logger=None, tag="INTERP"):
+                logger=None, tag="INTERP", display_cb=None):
     n = max(2, int(seconds * INTERP_HZ))
     dt = 1.0 / INTERP_HZ
     if logger:
@@ -177,6 +208,9 @@ def interp_move(q, phi_from, phi_to, grip_from, grip_to, seconds,
             except Exception as ex:
                 logger.log("HIL_ERROR", where="read_all",
                            err=repr(ex))
+        # Refresh live camera view every ~3 steps (~30 ms ≈ 33 fps)
+        if display_cb and (i % 3 == 0):
+            display_cb(phi, g)
         time.sleep(dt)
     if logger:
         logger.log(tag + "_END")
@@ -256,7 +290,7 @@ def render_overlay(display, phi_cmd, xyz, gamma, grip,
     legend = [
         "arrows: X/Y   r/f: Z   q/e: wrist   SPACE: grip",
         "1-9: goto saved point   g: goto menu   n: save",
-        "z: test routine (p1->p6->close->p2->p5->open->p3)",
+        "m: modify point   z: test routine",
         "+/-: step   l: list   x: del   h: home   p: pose",
         "ESC: save JSON and exit",
     ]
@@ -403,6 +437,7 @@ def main():
     q.connect()
     trace.log("QARM_CONNECTED")
     cam = open_camera_or_none()
+    cam_thread = CameraThread(cam) if cam is not None else None
     trace.log("CAMERA", ok=(cam is not None))
 
     try:
@@ -420,13 +455,21 @@ def main():
         cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
 
         def grab_frame():
-            if cam is not None:
-                try:
-                    color, _ = cam.read()
-                    return color.copy()
-                except Exception:
-                    pass
+            if cam_thread is not None:
+                return cam_thread.get_frame()
             return np.zeros((720, 1280, 3), dtype=np.uint8)
+
+        def refresh_display(phi_now, grip_now):
+            """Update the OpenCV window with live camera + overlay.
+            Called from interp_move so the view stays alive during moves."""
+            frame = grab_frame()
+            xyz_now, _ = pose_from_joints(phi_now)
+            render_overlay(frame, phi_now, xyz_now, gamma, grip_now,
+                           lin_step, rot_step, len(points), log_line,
+                           recording=False,
+                           goto_labels=list(points.keys()))
+            cv2.imshow(WINDOW_NAME, frame)
+            cv2.waitKey(1)
 
         def set_gripper(target_grip, seconds=0.8):
             """Interpolate gripper without moving joints.
@@ -439,7 +482,8 @@ def main():
             trace.log("GRIPPER_CMD", grip_from=grip_cmd, grip_to=target_grip,
                       xyz=xyz)
             interp_move(q, phi_cmd, phi_cmd, grip_cmd, target_grip,
-                        seconds=seconds, logger=trace, tag="GRIPPER")
+                        seconds=seconds, logger=trace, tag="GRIPPER",
+                        display_cb=refresh_display)
             # brief settle — just 3 writes, not 10
             for _ in range(3):
                 try:
@@ -472,14 +516,18 @@ def main():
                 return
             trace.log("ROUTINE_START", labels=",".join(label_list[:6]))
             sequence = [
+                ("goto", 1),
                 ("goto", 0),
                 ("goto", 5),
                 ("grip", GRIP_CLOSE_CMD),
+                ("dwell", 0.5),
                 ("goto", 1),
                 ("goto", 2),
                 ("goto", 4),
                 ("grip", GRIP_OPEN_CMD),
+                ("dwell", 0.5),
                 ("goto", 2),
+                ("goto", 1),
             ]
             for step_idx, (op, arg) in enumerate(sequence):
                 trace.log("ROUTINE_STEP", step=step_idx, op=op, arg=arg)
@@ -489,6 +537,9 @@ def main():
                 elif op == "grip":
                     print(f"\n[routine] gripper -> {arg:.2f}")
                     set_gripper(arg)
+                elif op == "dwell":
+                    print(f"\n[routine] settling {arg:.1f}s...")
+                    time.sleep(arg)
             trace.log("ROUTINE_DONE")
             log_line = "routine done"
             log_expiry = time.time() + 3.0
@@ -517,7 +568,8 @@ def main():
             print(f"  going to {label}  duration={duration:.1f}s")
             interp_move(q, phi_cmd, phi_target,
                         grip_cmd, grip_target, seconds=duration,
-                        logger=trace, tag="GOTO")
+                        logger=trace, tag="GOTO",
+                        display_cb=refresh_display)
             for _ in range(20):
                 try:
                     q.set_joints_and_gripper(phi_target, grip_target)
@@ -624,7 +676,8 @@ def main():
                     # (which would push the servo against the open endstop).
                     safe_grip = max(grip_cmd, GRIP_OPEN_CMD)
                     interp_move(q, phi_cmd, target, grip_cmd, safe_grip,
-                                seconds=5.0, logger=trace, tag="HOME")
+                                seconds=5.0, logger=trace, tag="HOME",
+                                display_cb=refresh_display)
                     for _ in range(40):
                         q.set_joints_and_gripper(target, safe_grip)
                         time.sleep(0.05)
@@ -698,6 +751,136 @@ def main():
                     else:
                         log_line = "cancelled"
                         log_expiry = time.time() + 2.0
+                elif c == "m":
+                    if not points:
+                        log_line = "no points saved yet"
+                        log_expiry = time.time() + 2.0
+                        continue
+                    label_list = list(points.keys())
+                    label = modal_menu(
+                        WINDOW_NAME, grab_frame,
+                        phi_cmd, xyz, gamma, grip_cmd,
+                        lin_step, rot_step, len(points),
+                        "Modify point — select to go there:",
+                        label_list,
+                    )
+                    if label:
+                        goto_label(label)
+                        log_line = (f"at {label} — jog to new pos, "
+                                    f"press m again to confirm")
+                        log_expiry = time.time() + 60.0
+                        # Wait for the user to jog, then press 'm'
+                        # to overwrite with current position
+                        while True:
+                            disp = grab_frame()
+                            if time.time() > log_expiry:
+                                log_line = ""
+                            render_overlay(
+                                disp, phi_cmd, xyz, gamma, grip_cmd,
+                                lin_step, rot_step, len(points),
+                                log_line, recording=False,
+                                goto_labels=list(points.keys()))
+                            _put(disp, f"MODIFYING: {label}  "
+                                 f"(m=save  ESC=cancel)", 128,
+                                 scale=0.6, color=(0, 180, 255),
+                                 thick=2)
+                            cv2.imshow(WINDOW_NAME, disp)
+                            mk = cv2.waitKeyEx(15)
+                            if mk == -1:
+                                continue
+                            if mk == 27:  # ESC — cancel
+                                log_line = "modify cancelled"
+                                log_expiry = time.time() + 2.0
+                                break
+                            # Jog controls work inside modify mode
+                            m_xyz = xyz.copy()
+                            m_gamma = gamma
+                            m_moved = False
+                            if mk == KEY_UP:
+                                m_xyz[0] += lin_step; m_moved = True
+                            elif mk == KEY_DOWN:
+                                m_xyz[0] -= lin_step; m_moved = True
+                            elif mk == KEY_RIGHT:
+                                m_xyz[1] += lin_step; m_moved = True
+                            elif mk == KEY_LEFT:
+                                m_xyz[1] -= lin_step; m_moved = True
+                            elif mk < 256:
+                                mc = chr(mk).lower()
+                                if mc == "r":
+                                    m_xyz[2] += lin_step; m_moved = True
+                                elif mc == "f":
+                                    m_xyz[2] -= lin_step; m_moved = True
+                                elif mc == "q":
+                                    m_gamma -= rot_step; m_moved = True
+                                elif mc == "e":
+                                    m_gamma += rot_step; m_moved = True
+                                elif mc == "+" or mc == "=":
+                                    lin_step *= 2; rot_step *= 2
+                                    log_line = (
+                                        f"step lin={lin_step*1000:.1f}mm "
+                                        f"rot={np.degrees(rot_step):.0f}deg")
+                                    log_expiry = time.time() + 3.0
+                                elif mc == "-" or mc == "_":
+                                    lin_step /= 2; rot_step /= 2
+                                    log_line = (
+                                        f"step lin={lin_step*1000:.1f}mm "
+                                        f"rot={np.degrees(rot_step):.0f}deg")
+                                    log_expiry = time.time() + 3.0
+                                elif mc == " ":
+                                    if grip_cmd > 0.35:
+                                        set_gripper(GRIP_OPEN_CMD)
+                                    else:
+                                        set_gripper(GRIP_CLOSE_CMD)
+                                    continue
+                                elif mc == "m":
+                                    # Confirm: overwrite the point
+                                    phi_act, grip_act = q.read_all()
+                                    xyz_act, gamma_act = \
+                                        pose_from_joints(phi_act)
+                                    points[label] = {
+                                        "label": label,
+                                        "joints_rad": [float(a)
+                                                       for a in phi_act],
+                                        "joints_deg": [
+                                            float(np.degrees(a))
+                                            for a in phi_act],
+                                        "xyz_m": [float(a)
+                                                  for a in xyz_act],
+                                        "gamma_rad": float(gamma_act),
+                                        "gripper": float(grip_act),
+                                        "timestamp":
+                                            datetime.now().isoformat(
+                                                timespec="seconds"),
+                                    }
+                                    log_line = f"modified {label}"
+                                    log_expiry = time.time() + 3.0
+                                    print(f"[modified] {label}  "
+                                          f"xyz={xyz_act.round(3)}")
+                                    break
+                            if m_moved:
+                                try:
+                                    phi_new = inverse_kinematics(
+                                        m_xyz, gamma=m_gamma)
+                                except Exception as ex:
+                                    log_line = f"IK fail: {ex}"
+                                    log_expiry = time.time() + 2.0
+                                    continue
+                                phi_new = np.array(phi_new, dtype=float)
+                                for i in range(4):
+                                    lo, hi = JOINT_LIMITS[i]
+                                    phi_new[i] = float(
+                                        np.clip(phi_new[i], lo, hi))
+                                interp_move(
+                                    q, phi_cmd, phi_new,
+                                    grip_cmd, grip_cmd,
+                                    seconds=0.3, logger=trace,
+                                    tag="JOG",
+                                    display_cb=refresh_display)
+                                phi_cmd = phi_new
+                                xyz, gamma = pose_from_joints(phi_cmd)
+                    else:
+                        log_line = "cancelled"
+                        log_expiry = time.time() + 2.0
                 elif c == "x":
                     label = modal_input(
                         WINDOW_NAME, grab_frame,
@@ -744,7 +927,8 @@ def main():
                       grip_from=grip_cmd, grip_to=new_grip,
                       xyz_to=new_xyz)
             interp_move(q, phi_cmd, phi_new, grip_cmd, new_grip,
-                        seconds=0.3, logger=trace, tag="JOG")
+                        seconds=0.3, logger=trace, tag="JOG",
+                        display_cb=refresh_display)
             phi_cmd = phi_new
             grip_cmd = new_grip
             xyz, gamma = pose_from_joints(phi_cmd)
@@ -761,6 +945,11 @@ def main():
             cv2.destroyAllWindows()
         except Exception:
             pass
+        if cam_thread is not None:
+            try:
+                cam_thread.stop()
+            except Exception:
+                pass
         if cam is not None:
             try:
                 cam.close()
