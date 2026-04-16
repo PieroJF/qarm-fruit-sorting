@@ -1,0 +1,33 @@
+# MATLAB / Simulink build artifacts
+slprj/
+*.slxc
+*.autosave
+*.asv
+*.mex*
+*.slx.r20*
+octave-workspace
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Runtime / session files (local to each workspace)
+teach_points.json
+calibration.json
+logs/
+
+# Live camera captures (workspace-specific)
+figures/live_*.png
+figures/preview_*.png
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+*.swp
