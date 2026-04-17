@@ -49,7 +49,8 @@ class FruitSortingController:
     HOME_POS = np.array([0.45, 0.0, 0.49])
     SAFE_Z = 0.20
     APPROACH_Z = 0.15
-    PICK_Z = 0.02
+    PICK_Z = 0.02          # absolute floor — never go below this
+    PICK_OFFSET = 0.02     # subtract from fruit_z when computing pick height
     PLACE_Z = 0.10
 
     # Timing
@@ -57,8 +58,9 @@ class FruitSortingController:
     T_APPROACH = 1.0
     T_PICK = 0.8
     T_DWELL = 0.5
+    T_GRIP = 0.8           # gripper open/close interpolation time
 
-    def __init__(self, qarm, camera=None):
+    def __init__(self, qarm, camera=None, pick_only=False):
         """
         Parameters
         ----------
@@ -66,9 +68,12 @@ class FruitSortingController:
             Connected QArm hardware driver.
         camera : QArmCamera, optional
             Camera for fruit detection.
+        pick_only : bool
+            If True, just pick up and lift each fruit (no basket placement).
         """
         self.qarm = qarm
         self.camera = camera
+        self.pick_only = pick_only
         self.state = State.INIT
         self.fruit_queue = []
         self.current_target = None
@@ -78,6 +83,13 @@ class FruitSortingController:
         self._traj_duration = 0
         self._traj_start_pos = None
         self._traj_end_pos = None
+        # Gripper interpolation state — avoids -1289 overload stalls by
+        # ramping the command and reading back the settled position after
+        # the close, so we never keep torque against a stalled jaw.
+        self._held_grip = GRIP_OPEN       # gripper value to send while transiting
+        self._grip_from = GRIP_OPEN       # start of current grip interp
+        self._grip_to = GRIP_OPEN         # end of current grip interp
+        self._grip_start_time = 0.0       # wall clock start of current grip interp
 
     def set_fruit_positions(self, positions, types):
         """
@@ -96,14 +108,16 @@ class FruitSortingController:
         ]
         print(f"Loaded {len(self.fruit_queue)} fruits into queue")
 
-    def run_autonomous(self, dt=0.002):
+    def run_autonomous(self, dt=0.01):
         """
         Run the full autonomous sorting loop.
 
         Parameters
         ----------
         dt : float
-            Control loop period (seconds). Default 500Hz.
+            Control loop period (seconds). Default 100 Hz — plenty for
+            trajectory tracking at QArm motion bandwidths. Previous
+            500 Hz default burned CPU without benefit.
         """
         print("\n=== AUTONOMOUS FRUIT SORTING ===")
         print(f"Fruits to sort: {len(self.fruit_queue)}")
@@ -115,7 +129,12 @@ class FruitSortingController:
 
         while self.state != State.DONE:
             loop_start = time.time()
-            self._step(time.time())
+            try:
+                self._step(time.time())
+            except Exception as ex:
+                print(f"[ERROR] state {self.state.name}: {ex}")
+                print("[ERROR] aborting sort — arm held at last commanded pose")
+                break
             elapsed = time.time() - loop_start
             sleep_time = dt - elapsed
             if sleep_time > 0:
@@ -131,17 +150,23 @@ class FruitSortingController:
         ee_pos, _ = forward_kinematics(joints)
 
         if self.state == State.GO_HOME:
-            self._start_move(ee_pos, self.HOME_POS, self.T_TRANSIT)
-            self.state = State.INIT
-            self._print_state("Moving to home")
-
-        elif self.state == State.INIT:
-            if self._move_complete(t):
-                self._execute_position(self._traj_end_pos, GRIP_OPEN)
+            # Arm trajectory exactly once per entry into GO_HOME.
+            if self._traj_end_pos is None or \
+               not np.allclose(self._traj_end_pos, self.HOME_POS):
+                self._start_move(ee_pos, self.HOME_POS, self.T_TRANSIT)
+                self._print_state("Moving to home")
+            if self._track_trajectory(t, gripper_val=GRIP_OPEN):
+                self._traj_end_pos = None  # mark traj consumed
                 if not self.fruit_queue:
                     self.state = State.DONE
                 else:
                     self.state = State.SELECT_FRUIT
+
+        elif self.state == State.INIT:
+            # Legacy re-entry point (post-place). Route through GO_HOME so
+            # the trajectory actually tracks.
+            self._traj_end_pos = None
+            self.state = State.GO_HOME
 
         elif self.state == State.SELECT_FRUIT:
             self.current_target = self.fruit_queue.pop(0)
@@ -150,6 +175,20 @@ class FruitSortingController:
 
             approach_pos = self.current_target['pos'].copy()
             approach_pos[2] = self.APPROACH_Z
+            # Pre-validate IK on approach and pick positions — skip unreachable
+            pick_pos_chk = self.current_target['pos'].copy()
+            pick_pos_chk[2] = self._compute_pick_z(self.current_target['pos'])
+            if self._ik_safe(approach_pos) is None or \
+               self._ik_safe(pick_pos_chk) is None:
+                self._print_state(
+                    f"[skip] {self.current_target['type']} at "
+                    f"{self.current_target['pos'].round(3)} unreachable — "
+                    f"next fruit")
+                self.current_target = None
+                # Go back home and try next fruit
+                self._traj_end_pos = None
+                self.state = State.GO_HOME
+                return
             self._start_move(ee_pos, approach_pos, self.T_TRANSIT)
             self.state = State.APPROACH
             self._print_state(f"Approaching {self.current_target['type']}")
@@ -157,36 +196,62 @@ class FruitSortingController:
         elif self.state == State.APPROACH:
             if self._track_trajectory(t, gripper_val=GRIP_OPEN):
                 pick_pos = self.current_target['pos'].copy()
-                pick_pos[2] = self.PICK_Z
+                pick_pos[2] = self._compute_pick_z(self.current_target['pos'])
                 self._start_move(ee_pos, pick_pos, self.T_PICK)
                 self.state = State.DESCEND
-                self._print_state("Descending to pick")
+                self._print_state(f"Descending to pick (z={pick_pos[2]:.3f})")
 
         elif self.state == State.DESCEND:
             if self._track_trajectory(t, gripper_val=GRIP_OPEN):
-                self._dwell_start = time.time()
+                self._start_grip_interp(GRIP_CLOSE, duration=self.T_GRIP)
                 self.state = State.CLOSE_GRIPPER
-                self._print_state("Closing gripper")
+                self._print_state("Closing gripper (ramped)")
 
         elif self.state == State.CLOSE_GRIPPER:
-            self._execute_position(ee_pos, GRIP_CLOSE)
-            if time.time() - self._dwell_start >= self.T_DWELL:
+            # Ramp gripper smoothly from OPEN to CLOSE (avoids -1289 overload).
+            g = self._update_grip_interp()
+            self._execute_position(ee_pos, g)
+            if self._grip_interp_done():
+                # Read the ACTUAL settled gripper position and hold THAT
+                # value. If jaws stalled on the fruit, actual < 0.90 and
+                # we stop fighting the motor — no residual torque.
+                try:
+                    _, actual = self.qarm.read_all()
+                    self._held_grip = float(actual)
+                except Exception:
+                    self._held_grip = GRIP_CLOSE
                 ascend_pos = ee_pos.copy()
                 ascend_pos[2] = self.SAFE_Z
                 self._start_move(ee_pos, ascend_pos, self.T_APPROACH)
                 self.state = State.ASCEND_PICK
-                self._print_state("Ascending with fruit")
+                self._print_state(
+                    f"Ascending with fruit (held_grip={self._held_grip:.2f})")
 
         elif self.state == State.ASCEND_PICK:
-            if self._track_trajectory(t, gripper_val=GRIP_CLOSE):
-                basket_above = self.target_basket.copy()
-                basket_above[2] = self.SAFE_Z
-                self._start_move(ee_pos, basket_above, self.T_TRANSIT)
-                self.state = State.MOVE_TO_BASKET
-                self._print_state(f"Moving to {self.current_target['type']} basket")
+            if self._track_trajectory(t, gripper_val=self._held_grip):
+                if self.pick_only:
+                    # Hold fruit up for 1.5 s so it's visible, then release
+                    self._dwell_start = time.time()
+                    self._dwell_hold = 1.5
+                    self._grip_start_time = time.time() + 1.5  # defer open
+                    self._grip_from = float(self._held_grip)
+                    self._grip_to = GRIP_OPEN
+                    self._grip_duration = self.T_GRIP
+                    self.state = State.OPEN_GRIPPER
+                    self.sorted_count += 1
+                    self._print_state(
+                        f"Picked {self.current_target['type']} "
+                        f"(#{self.sorted_count}) — holding up"
+                    )
+                else:
+                    basket_above = self.target_basket.copy()
+                    basket_above[2] = self.SAFE_Z
+                    self._start_move(ee_pos, basket_above, self.T_TRANSIT)
+                    self.state = State.MOVE_TO_BASKET
+                    self._print_state(f"Moving to {self.current_target['type']} basket")
 
         elif self.state == State.MOVE_TO_BASKET:
-            if self._track_trajectory(t, gripper_val=GRIP_CLOSE):
+            if self._track_trajectory(t, gripper_val=self._held_grip):
                 place_pos = self.target_basket.copy()
                 place_pos[2] = self.PLACE_Z
                 self._start_move(ee_pos, place_pos, self.T_APPROACH)
@@ -194,29 +259,39 @@ class FruitSortingController:
                 self._print_state("Descending to basket")
 
         elif self.state == State.DESCEND_PLACE:
-            if self._track_trajectory(t, gripper_val=GRIP_CLOSE):
-                self._dwell_start = time.time()
+            if self._track_trajectory(t, gripper_val=self._held_grip):
+                self._start_grip_interp(GRIP_OPEN, duration=self.T_GRIP)
                 self.state = State.OPEN_GRIPPER
-                self._print_state("Opening gripper")
+                self._print_state("Opening gripper (ramped)")
 
         elif self.state == State.OPEN_GRIPPER:
-            self._execute_position(ee_pos, GRIP_OPEN)
-            if time.time() - self._dwell_start >= self.T_DWELL:
-                self.sorted_count += 1
-                ascend_pos = ee_pos.copy()
-                ascend_pos[2] = self.SAFE_Z
-                self._start_move(ee_pos, ascend_pos, self.T_APPROACH)
-                self.state = State.ASCEND_PLACE
-                self._print_state(
-                    f"Placed {self.current_target['type']} "
-                    f"(#{self.sorted_count})"
-                )
+            # Ramp gripper from held value down to GRIP_OPEN, avoids
+            # yanking the servo past its open endstop (-1289 overload).
+            g = self._update_grip_interp()
+            self._execute_position(ee_pos, g)
+            if self._grip_interp_done():
+                self._held_grip = GRIP_OPEN
+                if self.pick_only:
+                    # Go straight home, skip basket descent
+                    self._traj_end_pos = None
+                    self.state = State.GO_HOME
+                    self._print_state("Released — returning home")
+                else:
+                    self.sorted_count += 1
+                    ascend_pos = ee_pos.copy()
+                    ascend_pos[2] = self.SAFE_Z
+                    self._start_move(ee_pos, ascend_pos, self.T_APPROACH)
+                    self.state = State.ASCEND_PLACE
+                    self._print_state(
+                        f"Placed {self.current_target['type']} "
+                        f"(#{self.sorted_count})"
+                    )
 
         elif self.state == State.ASCEND_PLACE:
             if self._track_trajectory(t, gripper_val=GRIP_OPEN):
                 # Return home, then check for more fruits
-                self._start_move(ee_pos, self.HOME_POS, self.T_TRANSIT)
-                self.state = State.INIT
+                self._traj_end_pos = None
+                self.state = State.GO_HOME
                 self._print_state("Returning home")
 
     def _start_move(self, start, end, duration):
@@ -244,10 +319,69 @@ class FruitSortingController:
         self._execute_position(pos, gripper_val)
         return False
 
+    def _compute_pick_z(self, fruit_xyz):
+        """Z to descend to for a pick, clamped to the PICK_Z absolute floor.
+        PICK_OFFSET = how far below the fruit centroid we aim so the gripper
+        straddles the fruit rather than closing on thin air above it."""
+        return max(self.PICK_Z, float(fruit_xyz[2]) - self.PICK_OFFSET)
+
+    def _start_grip_interp(self, target, duration=None):
+        """Begin a smooth gripper open/close interpolation from the current
+        held value to target. Replaces snap-to-target which stalls the
+        servo against objects or endstops."""
+        self._grip_from = float(self._held_grip)
+        self._grip_to = float(target)
+        self._grip_start_time = time.time()
+        self._grip_duration = duration if duration is not None else self.T_GRIP
+
+    def _update_grip_interp(self):
+        """Advance the gripper interpolation and return the current value
+        to command. Called every loop iteration during open/close states."""
+        if self._grip_duration <= 0:
+            self._held_grip = self._grip_to
+            return self._grip_to
+        elapsed = time.time() - self._grip_start_time
+        frac = min(1.0, max(0.0, elapsed / self._grip_duration))
+        s = 3 * frac * frac - 2 * frac * frac * frac  # smoothstep
+        g = self._grip_from + s * (self._grip_to - self._grip_from)
+        return g
+
+    def _grip_interp_done(self):
+        return (time.time() - self._grip_start_time) >= self._grip_duration
+
+    def _ik_safe(self, target_pos):
+        """Try IK for target_pos. Returns joints array or None on failure
+        (IK divergence, unreachable, or joint-limit violation).
+        Use this for pre-flight reachability checks before committing to
+        a trajectory."""
+        try:
+            phi = inverse_kinematics(target_pos, gamma=0.0)
+        except Exception:
+            return None
+        phi = np.array(phi, dtype=float)
+        limits = getattr(self.qarm, "JOINT_LIMITS", None)
+        if limits is not None:
+            for i in range(4):
+                lo, hi = limits[i]
+                if phi[i] < lo or phi[i] > hi:
+                    return None
+        return phi
+
     def _execute_position(self, target_pos, gripper_val):
-        """Compute IK and send commands to the robot."""
-        phi = inverse_kinematics(target_pos, gamma=0.0)
+        """Compute IK and send commands to the robot. On IK failure the
+        arm holds its last commanded pose (position-mode PID) and a warning
+        is logged once. Callers should pre-validate with _ik_safe if they
+        need to know a target is reachable before committing."""
+        phi = self._ik_safe(target_pos)
+        if phi is None:
+            if not getattr(self, "_ik_warn_fired", False):
+                print(f"  [warn] IK failed for target "
+                      f"{np.round(target_pos,3)} — holding last pose")
+                self._ik_warn_fired = True
+            return False
+        self._ik_warn_fired = False
         self.qarm.set_joints_and_gripper(phi, gripper_val)
+        return True
 
     def _print_state(self, msg):
         """Print state transition message."""

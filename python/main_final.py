@@ -7,11 +7,12 @@ calibration.json (T_cam_to_base), connects QArm + D415 camera, detects fruits,
 and runs the complete pick-and-place FSM.
 
 Usage:
-    C:\\Python313\\python.exe main_final.py [--no-camera] [--dry-run]
+    C:\\Python313\\python.exe main_final.py [--no-camera] [--dry-run] [--pick-only]
 
 Flags:
     --no-camera   Skip live camera detection, use manual fruit list instead
     --dry-run     Print the plan but don't move the arm
+    --pick-only   Just detect, pick up and lift each fruit (no basket sorting)
 """
 
 import json
@@ -25,7 +26,7 @@ from qarm_driver import QArmDriver
 from qarm_kinematics import forward_kinematics, inverse_kinematics
 from sorting_controller import FruitSortingController
 from camera import QArmCamera
-from fruit_detector import detect_fruits, draw_detections
+from fruit_detector import detect_fruits, draw_detections, detection_depth_mm
 
 try:
     import cv2
@@ -110,20 +111,17 @@ def detect_fruits_live(cam, T_cam_to_base):
     types = []
     for det in dets:
         row, col = det.centroid
-        d_mm = int(depth[row, col]) if depth is not None else 0
-        if d_mm <= 0:
-            patch = depth[max(0, row - 3):row + 4, max(0, col - 3):col + 4]
-            valid = patch[patch > 0]
-            d_mm = int(np.median(valid)) if valid.size > 0 else 0
-        if d_mm <= 0:
-            print(f"    skip {det.fruit_type} at ({row},{col}): no depth")
+        d_mm = detection_depth_mm(det, depth)
+        if d_mm is None:
+            print(f"    skip {det.fruit_type} at ({row},{col}): "
+                  f"no plausible depth in blob")
             continue
 
         p_world = cam.pixel_to_world(row, col, d_mm, T_cam_to_base)
         positions.append(p_world)
         types.append(det.fruit_type)
         print(f"    {det.fruit_type:12s}  pixel=({row:3d},{col:3d})  "
-              f"depth={d_mm}mm  world={p_world.round(3)}")
+              f"depth={d_mm:.0f}mm  world={p_world.round(3)}")
 
     return positions, types
 
@@ -132,9 +130,11 @@ def main():
     flags = set(sys.argv[1:])
     use_camera = "--no-camera" not in flags
     dry_run = "--dry-run" in flags
+    pick_only = "--pick-only" in flags
 
+    mode_label = "PICK & LIFT" if pick_only else "FULL SORT"
     print("=" * 60)
-    print("  QArm Fruit Sorting — Final Pipeline")
+    print(f"  QArm Fruit Sorting — {mode_label}")
     print("=" * 60)
 
     # --- Load config ---
@@ -224,7 +224,7 @@ def main():
         input("\nPress ENTER to start sorting (arm will move)...")
 
         # --- Configure controller ---
-        controller = FruitSortingController(qarm)
+        controller = FruitSortingController(qarm, pick_only=pick_only)
         controller.BASKETS = baskets
         if home_pos is not None:
             controller.HOME_POS = home_pos

@@ -12,7 +12,7 @@ Focus that window to drive the arm (key codes via cv2.waitKeyEx):
   + / -   : double / halve jog step
   h       : slow home (5 s)
   p       : print current pose to terminal
-  l       : list saved points to terminal
+  l       : view saved points (scrollable, read only; ESC to close)
   n       : save current pose (prompts for label in the terminal)
   x       : delete a saved point (prompts in the terminal)
   ESC     : write teach_points.json and exit
@@ -237,25 +237,30 @@ def _put(display, text, y, scale=0.55, color=(255, 255, 255), thick=2):
 
 
 def render_goto_panel(display, labels):
-    """Top-right panel listing the digit → label mapping used by 1-9."""
+    """Top-right panel listing all saved points numbered 1..N.
+    First 9 are direct 1-9 hotkeys; 10+ are accessed via g then t (type #)."""
     if not labels:
         return
     h, w = display.shape[:2]
     font = cv2.FONT_HERSHEY_SIMPLEX
     scale = 0.5
     thick = 1
-    items = labels[:9]
+    row_h = 20
+    max_rows = max(1, (h - 80) // row_h)
+    items = labels[:max_rows]
+    truncated = len(labels) > max_rows
 
     max_text_w = 0
     for i, lbl in enumerate(items):
-        (tw, _), _ = cv2.getTextSize(f"{i+1}: {lbl}", font, scale, thick)
+        (tw, _), _ = cv2.getTextSize(f"{i+1:2d}: {lbl}", font, scale, thick)
         max_text_w = max(max_text_w, tw)
 
     pad = 10
-    header = "GOTO  (1-9)"
+    header = f"POINTS  ({len(labels)})"
     (hw, _), _ = cv2.getTextSize(header, font, scale, thick)
     box_w = max(max_text_w, hw) + 2 * pad
-    box_h = 24 + len(items) * 20 + pad
+    extra_h = row_h if truncated else 0
+    box_h = 24 + len(items) * row_h + pad + extra_h
     x1 = w - 10
     x0 = x1 - box_w
     y0 = 10
@@ -269,9 +274,14 @@ def render_goto_panel(display, labels):
     cv2.putText(display, header, (x0 + pad, y0 + 18),
                 font, scale, (0, 255, 255), thick)
     for i, lbl in enumerate(items):
-        cv2.putText(display, f"{i+1}: {lbl}",
-                    (x0 + pad, y0 + 38 + i * 20),
-                    font, scale, (255, 255, 255), thick)
+        color = (255, 255, 255) if i < 9 else (180, 180, 180)
+        cv2.putText(display, f"{i+1:2d}: {lbl}",
+                    (x0 + pad, y0 + 38 + i * row_h),
+                    font, scale, color, thick)
+    if truncated:
+        cv2.putText(display, f"... +{len(labels) - max_rows} more",
+                    (x0 + pad, y0 + 38 + len(items) * row_h),
+                    font, scale, (180, 180, 180), thick)
 
 
 def render_overlay(display, phi_cmd, xyz, gamma, grip,
@@ -289,9 +299,9 @@ def render_overlay(display, phi_cmd, xyz, gamma, grip,
 
     legend = [
         "arrows: X/Y   r/f: Z   q/e: wrist   SPACE: grip",
-        "1-9: goto saved point   g: goto menu   n: save",
+        "1-9: goto saved point   g: goto menu (t=type #)   n: save",
         "m: modify point   z: test routine",
-        "+/-: step   l: list   x: del   h: home   p: pose",
+        "+/-: step   l: view saved   x: del   h: home   p: pose",
         "ESC: save JSON and exit",
     ]
     for i, line in enumerate(legend):
@@ -308,11 +318,22 @@ def render_overlay(display, phi_cmd, xyz, gamma, grip,
         cv2.circle(display, (w - 20, 20), 8, (0, 0, 255), -1)
 
 
-def render_menu_box(display, prompt, labels):
-    """Render a numbered menu over the camera view. Returns nothing —
-    labels are indexed 1..min(9,len)."""
+MENU_PAGE_SIZE = 9  # items visible per page
+
+
+def render_menu_box(display, prompt, labels, page=0, cursor=-1, hint=None):
+    """Render a numbered menu over the camera view with pagination.
+    page: current page (0-based). cursor: highlighted item index (-1=none).
+    hint: override for footer hint text."""
     h, w = display.shape[:2]
-    n_items = min(9, len(labels))
+    total = len(labels)
+    total_pages = max(1, (total + MENU_PAGE_SIZE - 1) // MENU_PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+    start = page * MENU_PAGE_SIZE
+    end = min(start + MENU_PAGE_SIZE, total)
+    visible = labels[start:end]
+    n_items = len(visible)
+
     box_w = min(640, int(w * 0.7))
     box_h = 80 + n_items * 32 + 40
     x0 = (w - box_w) // 2
@@ -325,18 +346,29 @@ def render_menu_box(display, prompt, labels):
     cv2.rectangle(display, (x0, y0), (x0 + box_w, y0 + box_h),
                   (0, 255, 255), 2)
 
-    cv2.putText(display, prompt, (x0 + 14, y0 + 32),
+    title = prompt
+    if total_pages > 1:
+        title += f"  (page {page+1}/{total_pages})"
+    cv2.putText(display, title, (x0 + 14, y0 + 32),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
-    for i, label in enumerate(labels[:9]):
+    for i, label in enumerate(visible):
         y = y0 + 60 + i * 32
-        line = f"{i+1}: {label}"
+        global_idx = start + i
+        digit = i + 1
+        line = f"{digit}: {label}"
+        if global_idx == cursor:
+            color = (0, 255, 0)
+        else:
+            color = (255, 255, 255)
         cv2.putText(display, line, (x0 + 14, y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2)
 
-    cv2.putText(display, "press 1-9 to go    ESC: cancel",
+    if hint is None:
+        hint = "1-9: select   arrows: scroll   ESC: cancel"
+    cv2.putText(display, hint,
                 (x0 + 14, y0 + box_h - 14),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
+                cv2.FONT_HERSHEY_SIMPLEX, 0.42, (180, 180, 180), 1)
 
 
 def render_input_box(display, prompt, buffer, blink_on):
@@ -373,22 +405,31 @@ def render_input_box(display, prompt, buffer, blink_on):
 
 
 def modal_menu(window_name, get_frame_fn, phi_cmd, xyz, gamma, grip_cmd,
-               lin_step, rot_step, pts_count, prompt, labels):
-    """Show a numbered menu over the camera view. Returns the selected
-    label string, or "" on ESC."""
+               lin_step, rot_step, pts_count, prompt, labels,
+               read_only=False):
+    """Show a paginated menu over the camera view. Returns the selected
+    label string, or "" on ESC. When read_only=True, digit keys are
+    ignored and only ESC exits (pure viewer)."""
+    page = 0
+    total_pages = max(1, (len(labels) + MENU_PAGE_SIZE - 1) // MENU_PAGE_SIZE)
     while True:
         frame = get_frame_fn()
         render_overlay(frame, phi_cmd, xyz, gamma, grip_cmd,
                        lin_step, rot_step, pts_count, "", False)
-        render_menu_box(frame, prompt, labels)
+        render_menu_box(frame, prompt, labels, page=page)
         cv2.imshow(window_name, frame)
         key = cv2.waitKeyEx(30)
         if key == -1:
             continue
         if key == 27:
             return ""
-        if ord("1") <= key <= ord("9"):
-            idx = key - ord("1")
+        # Arrow keys / PgUp / PgDn for page navigation
+        if key == KEY_RIGHT or key == KEY_DOWN:
+            page = min(page + 1, total_pages - 1)
+        elif key == KEY_LEFT or key == KEY_UP:
+            page = max(page - 1, 0)
+        elif not read_only and ord("1") <= key <= ord("9"):
+            idx = (page * MENU_PAGE_SIZE) + (key - ord("1"))
             if idx < len(labels):
                 return labels[idx]
 
@@ -420,6 +461,50 @@ def modal_input(window_name, get_frame_fn, phi_cmd, xyz, gamma, grip_cmd,
         if 32 <= key < 127:        # printable ASCII
             buf += chr(key)
             continue
+
+
+def modal_goto_select(window_name, get_frame_fn, phi_cmd, xyz, gamma, grip_cmd,
+                      lin_step, rot_step, pts_count, labels):
+    """Goto menu: paginated list of all saved points plus a textbox for
+    typing a point number directly (needed for # >= 10 since digit keys
+    only cover 1-9). Returns the selected label or '' on cancel."""
+    page = 0
+    total_pages = max(1, (len(labels) + MENU_PAGE_SIZE - 1) // MENU_PAGE_SIZE)
+    hint = "1-9: select   t: type #   arrows: page   ESC: cancel"
+    prompt = f"Go to point  ({len(labels)} saved)"
+    while True:
+        frame = get_frame_fn()
+        render_overlay(frame, phi_cmd, xyz, gamma, grip_cmd,
+                       lin_step, rot_step, pts_count, "", False)
+        render_menu_box(frame, prompt, labels, page=page, hint=hint)
+        cv2.imshow(window_name, frame)
+        key = cv2.waitKeyEx(30)
+        if key == -1:
+            continue
+        if key == 27:
+            return ""
+        if key == KEY_RIGHT or key == KEY_DOWN:
+            page = min(page + 1, total_pages - 1)
+        elif key == KEY_LEFT or key == KEY_UP:
+            page = max(page - 1, 0)
+        elif ord("1") <= key <= ord("9"):
+            idx = (page * MENU_PAGE_SIZE) + (key - ord("1"))
+            if idx < len(labels):
+                return labels[idx]
+        elif key < 256 and chr(key).lower() == "t":
+            num_str = modal_input(
+                window_name, get_frame_fn,
+                phi_cmd, xyz, gamma, grip_cmd,
+                lin_step, rot_step, pts_count,
+                f"Point # (1-{len(labels)}):")
+            if not num_str:
+                continue
+            try:
+                n = int(num_str)
+            except ValueError:
+                continue
+            if 1 <= n <= len(labels):
+                return labels[n - 1]
 
 
 def main():
@@ -701,13 +786,18 @@ def main():
                           f"gamma(deg): {np.degrees(gamma_now):.1f}  "
                           f"gripper: {grip_now:.2f}")
                 elif c == "l":
-                    print()
                     if not points:
-                        print("  (no points saved)")
-                    for lbl, pt in points.items():
-                        xyz_pt = np.array(pt["xyz_m"])
-                        print(f"  {lbl:15s} xyz={xyz_pt.round(3)}  "
-                              f"joints(deg)={np.array(pt['joints_deg']).round(1)}")
+                        log_line = "no points saved yet"
+                        log_expiry = time.time() + 2.0
+                        continue
+                    modal_menu(
+                        WINDOW_NAME, grab_frame,
+                        phi_cmd, xyz, gamma, grip_cmd,
+                        lin_step, rot_step, len(points),
+                        "Saved points (read only)",
+                        list(points.keys()),
+                        read_only=True,
+                    )
                 elif c == "n":
                     label = modal_input(
                         WINDOW_NAME, grab_frame,
@@ -739,11 +829,10 @@ def main():
                         log_expiry = time.time() + 2.0
                         continue
                     label_list = list(points.keys())
-                    label = modal_menu(
+                    label = modal_goto_select(
                         WINDOW_NAME, grab_frame,
                         phi_cmd, xyz, gamma, grip_cmd,
                         lin_step, rot_step, len(points),
-                        "Go to point — press digit:",
                         label_list,
                     )
                     if label:

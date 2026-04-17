@@ -100,8 +100,48 @@ class QArmCamera:
         except Exception as e:
             print(f"  [warn] depth emitter/ae setup failed: {e}")
 
+        # Read real intrinsics from the sensor (replaces hardcoded defaults)
+        self._read_real_intrinsics()
+
         print(f"Camera opened: color {self.color_w}x{self.color_h}, "
               f"depth {self.depth_w}x{self.depth_h} @ {self.fps}fps")
+        print(f"  intrinsics: fx={self.intrinsics['fx']:.1f} "
+              f"fy={self.intrinsics['fy']:.1f} "
+              f"cx={self.intrinsics['cx']:.1f} "
+              f"cy={self.intrinsics['cy']:.1f}")
+
+    def _read_real_intrinsics(self):
+        """Read real camera intrinsics from the D415 sensor via the SDK.
+
+        The SDK returns K in transposed layout:
+            K_c[0][0]=fx  K_c[1][1]=fy  K_c[2][0]=cx  K_c[2][1]=cy
+        """
+        try:
+            from quanser.multimedia.video import media_lib, ffi
+            K_c = ffi.new('float[3][3]')
+            coeffs_c = ffi.new('float[5]')
+            model_c = ffi.new('t_video3d_distortion_model *')
+
+            result = media_lib.video3d_stream_get_camera_intrinsics(
+                self.color_stream._stream, K_c, model_c, coeffs_c)
+            if result < 0:
+                print(f"  [warn] get_camera_intrinsics returned {result} — using defaults")
+                return
+
+            fx = float(K_c[0][0])
+            fy = float(K_c[1][1])
+            cx = float(K_c[2][0])  # transposed layout
+            cy = float(K_c[2][1])
+
+            if fx > 0 and fy > 0:
+                self.intrinsics = {'fx': fx, 'fy': fy, 'cx': cx, 'cy': cy}
+                self.distortion_coeffs = np.array(
+                    [float(coeffs_c[i]) for i in range(5)], dtype=np.float32)
+                print(f"  [ok] read real intrinsics from sensor")
+                return
+            print(f"  [warn] sensor returned zero intrinsics — using defaults")
+        except Exception as e:
+            print(f"  [warn] could not read intrinsics: {e} — using defaults")
 
     @staticmethod
     def _set_stream_props(stream, prop_value_map):

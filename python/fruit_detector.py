@@ -8,36 +8,78 @@ import cv2
 
 
 # HSV ranges (OpenCV convention: H=0-179, S=0-255, V=0-255)
+# Tuned for lab lighting — wider ranges to catch washed-out / bright fruit.
 HSV_RANGES = {
     'banana': {
-        'lower': np.array([20, 100, 120]),
+        'lower': np.array([20, 70, 100]),
         'upper': np.array([35, 255, 255]),
     },
     'red': {  # Shared by strawberry and tomato
-        'lower1': np.array([0, 100, 80]),
-        'upper1': np.array([10, 255, 255]),
-        'lower2': np.array([170, 100, 80]),
+        # Range 1: red-to-orange (covers bright strawberries under lab light)
+        'lower1': np.array([0, 50, 50]),
+        'upper1': np.array([15, 255, 255]),
+        # Range 2: deep red / magenta wrap-around
+        'lower2': np.array([165, 50, 50]),
         'upper2': np.array([179, 255, 255]),
     },
 }
 
-MIN_AREA = 500           # Minimum blob area in pixels
-CIRCULARITY_THRESH = 0.65  # Above = tomato, below = strawberry
+MIN_AREA = 300           # Minimum blob area in pixels (lowered for distant fruit)
+CIRCULARITY_THRESH = 0.75  # Above = tomato, below = strawberry. Raised
+                           # from 0.65 because small strawberries measured
+                           # ~0.70 in lab lighting; real tomatoes sit at
+                           # 0.85-0.95 so margin stays healthy.
 SATURATION_THRESH = 140    # Higher saturation = tomato
 
 
 class FruitDetection:
     """Result of a single fruit detection."""
-    def __init__(self, fruit_type, centroid, bbox, area, confidence):
+    def __init__(self, fruit_type, centroid, bbox, area, confidence,
+                 contour=None):
         self.fruit_type = fruit_type
         self.centroid = centroid        # (row, col) in pixels
         self.bbox = bbox                # (x, y, w, h)
         self.area = area
         self.confidence = confidence
+        self.contour = contour          # cv2 contour array (optional)
 
     def __repr__(self):
         return (f"FruitDetection('{self.fruit_type}', "
                 f"centroid={self.centroid}, conf={self.confidence:.2f})")
+
+
+# Plausible workspace depth band from the camera (lab setup, D415 at the
+# pickhome1 pose). Values outside this band are IR shadow or background.
+DEPTH_MIN_MM = 200
+DEPTH_MAX_MM = 700
+
+
+def detection_depth_mm(det, depth_image,
+                       dmin=DEPTH_MIN_MM, dmax=DEPTH_MAX_MM):
+    """Robust depth in mm for a detection using the blob's contour interior.
+
+    Builds a mask from det.contour (falls back to bbox if no contour),
+    intersects with valid depth pixels in [dmin, dmax], and returns the
+    median. Returns None if not enough valid pixels remain.
+    """
+    if depth_image is None:
+        return None
+    h, w = depth_image.shape[:2]
+
+    mask = np.zeros((h, w), dtype=np.uint8)
+    if det.contour is not None:
+        cv2.drawContours(mask, [det.contour], -1, 255, -1)
+    else:
+        x, y, bw, bh = det.bbox
+        x0 = max(0, x); y0 = max(0, y)
+        x1 = min(w, x + bw); y1 = min(h, y + bh)
+        mask[y0:y1, x0:x1] = 255
+
+    depth_masked = depth_image[mask > 0]
+    valid = depth_masked[(depth_masked >= dmin) & (depth_masked <= dmax)]
+    if valid.size < 20:
+        return None
+    return float(np.median(valid))
 
 
 def detect_fruits(bgr_image, depth_image=None, min_area=MIN_AREA):
@@ -118,7 +160,8 @@ def _extract_blobs(mask, hsv, fruit_type, detections, min_area):
             centroid=(cy, cx),  # (row, col)
             bbox=(x, y, w, h),
             area=area,
-            confidence=conf
+            confidence=conf,
+            contour=c,
         ))
 
 
@@ -162,7 +205,8 @@ def _extract_red_blobs(mask, hsv, detections, min_area):
             centroid=(cy, cx),
             bbox=(x, y, w, h),
             area=area,
-            confidence=conf
+            confidence=conf,
+            contour=c,
         ))
 
 
