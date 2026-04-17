@@ -10,8 +10,8 @@ from enum import Enum, auto
 from qarm_kinematics import forward_kinematics, inverse_kinematics
 from trajectory import cubic_trajectory
 
-GRIP_CLOSE = 0.65
-GRIP_OPEN = 0.10
+GRIP_CLOSE = 0.90
+GRIP_OPEN = 0.15
 
 
 class State(Enum):

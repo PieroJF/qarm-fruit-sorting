@@ -109,8 +109,8 @@ INTERP_HZ = 100.0
 #   0.0 drives the servo past its physical open endstop and holds it
 #       there during the rest of the interpolation  -> open overload (-1289)
 # Use safer clamps on both ends.
-GRIP_CLOSE_CMD = 0.725
-GRIP_OPEN_CMD  = 0.10
+GRIP_CLOSE_CMD = 0.9
+GRIP_OPEN_CMD  = 0.15
 # If the end-effector is below this Z (m), warn before closing.
 Z_LOW_WARN = 0.01
 WINDOW_NAME = "QArm Teach Pendant — focus here to jog"
@@ -629,7 +629,7 @@ def main():
             elif key == KEY_LEFT:
                 new_xyz[1] -= lin_step; moved = True
             elif key == 32:  # SPACE — use set_gripper so we read-back actual
-                if grip_cmd > 0.35:
+                if grip_cmd > 0.50:
                     set_gripper(GRIP_OPEN_CMD)
                 else:
                     if xyz[2] < Z_LOW_WARN:
@@ -827,7 +827,7 @@ def main():
                                         f"rot={np.degrees(rot_step):.0f}deg")
                                     log_expiry = time.time() + 3.0
                                 elif mc == " ":
-                                    if grip_cmd > 0.35:
+                                    if grip_cmd > 0.50:
                                         set_gripper(GRIP_OPEN_CMD)
                                     else:
                                         set_gripper(GRIP_CLOSE_CMD)
