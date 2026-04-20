@@ -370,6 +370,30 @@ def test_sim_controller_uses_detected_z():
     return name, True, "pick_z clamps floor and subtracts offset"
 
 
+def test_set_gripper_ramp_extracted():
+    """The shared helper ramps from `from` to `target` over `duration`
+    seconds using smoothstep, and after the ramp exposes `held_grip`
+    matching the settled value reported by the mocked qarm."""
+    name = "set_gripper_ramp_helper"
+    from sorting_controller import FruitSortingController, GRIP_OPEN, GRIP_CLOSE
+    q = MockQArm()
+    q.fake_grip = GRIP_OPEN  # mock tracks perfectly
+    c = FruitSortingController(q)
+    c.T_GRIP = 0.05  # quick
+    # Precondition: helper exists on the controller class
+    assert hasattr(c, "set_gripper_ramp"), "set_gripper_ramp missing"
+    # Ramp from current to CLOSE
+    result = c.set_gripper_ramp(GRIP_CLOSE)
+    # Should have sent intermediate values, not just a single snap
+    cmds = [g for _, g in q.cmd_log]
+    unique = set(round(v, 2) for v in cmds)
+    assert len(unique) >= 5, f"no ramp, only {unique}"
+    # After settling, held_grip matches the mocked actual (which tracked)
+    assert abs(c._held_grip - GRIP_CLOSE) < 0.05, \
+        f"held_grip {c._held_grip} != {GRIP_CLOSE}"
+    return name, True, f"ramp over {len(unique)} values, held_grip correct"
+
+
 # ------------------------------------------------------------------------
 # Runner
 # ------------------------------------------------------------------------
@@ -384,6 +408,7 @@ TESTS = [
     test_sim_controller,
     test_sim_controller_skips_unreachable,
     test_sim_controller_uses_detected_z,
+    test_set_gripper_ramp_extracted,
 ]
 
 

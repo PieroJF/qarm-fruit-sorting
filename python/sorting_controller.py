@@ -349,6 +349,40 @@ class FruitSortingController:
     def _grip_interp_done(self):
         return (time.time() - self._grip_start_time) >= self._grip_duration
 
+    def set_gripper_ramp(self, target, duration=None):
+        """Synchronously ramp the gripper from the current held value to
+        `target` over `duration` seconds (default T_GRIP). After the ramp,
+        reads actual gripper position from the driver and stores it in
+        `_held_grip` so subsequent commands do not fight a stalled servo.
+
+        Thread-safety: blocking, intended for teach-pendant / remote use.
+        Do NOT call from inside `run_autonomous`'s FSM step loop; the FSM
+        has its own stepwise ramp via _update_grip_interp.
+        """
+        self._start_grip_interp(target, duration=duration)
+        # Hold current joints while ramping so only the gripper moves.
+        # Send joints directly (bypass IK) since we already have joint angles,
+        # not an xyz target.
+        joints = self._joints_snapshot()
+        while not self._grip_interp_done():
+            g = self._update_grip_interp()
+            self.qarm.set_joints_and_gripper(joints, g)
+            time.sleep(0.01)
+        # Settle for a few frames, then read back actual.
+        for _ in range(3):
+            self.qarm.set_joints_and_gripper(joints, target)
+            time.sleep(0.02)
+        try:
+            _, actual = self.qarm.read_all()
+            self._held_grip = float(actual)
+        except Exception:
+            self._held_grip = float(target)
+        return self._held_grip
+
+    def _joints_snapshot(self):
+        joints, _ = self.qarm.read_all()
+        return np.asarray(joints, dtype=float)
+
     def _ik_safe(self, target_pos):
         """Try IK for target_pos. Returns joints array or None on failure
         (IK divergence, unreachable, or joint-limit violation).
