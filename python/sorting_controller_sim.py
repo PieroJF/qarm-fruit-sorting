@@ -47,16 +47,23 @@ class StepController:
         'tomato':     np.array([0.00, -0.35, 0.05]),
     }
 
-    HOME_POS   = np.array([0.45, 0.00, 0.49])
-    SAFE_Z     = 0.20
-    APPROACH_Z = 0.15
-    PICK_Z     = 0.02
-    PLACE_Z    = 0.10
+    HOME_POS    = np.array([0.45, 0.00, 0.49])
+    SAFE_Z      = 0.20
+    APPROACH_Z  = 0.15
+    PICK_Z      = 0.02    # absolute floor — never command below this
+    PICK_OFFSET = 0.02    # descend to (fruit_z - PICK_OFFSET) clamped to PICK_Z
+    PLACE_Z     = 0.10
 
     T_TRANSIT  = 2.0
     T_APPROACH = 1.0
     T_PICK     = 0.8
     T_DWELL    = 0.5
+
+    # Joint limits used for pre-flight reachability. Matches QArmDriver.
+    JOINT_LIMITS = np.array([
+        [-2.967, 2.967], [-1.484, 1.484],
+        [-1.658, 1.309], [-2.793, 2.793],
+    ])
 
     def __init__(self, fruit_positions=None, fruit_types=None):
         self.state = S_GO_HOME
@@ -113,12 +120,26 @@ class StepController:
             self._current = target
             self._basket = self.BASKETS.get(target['type'], self.BASKETS['tomato'])
             approach = target['pos'].copy(); approach[2] = self.APPROACH_Z
-            self._start_move(ee_pos, approach, self.T_TRANSIT)
-            self.state = S_APPROACH
+            pick_chk = target['pos'].copy()
+            pick_chk[2] = self._compute_pick_z(target['pos'])
+            # Pre-flight reachability: if either approach or pick fails IK
+            # or hits a joint limit, skip to next fruit (or DONE).
+            if (self._ik_safe(approach) is None or
+                    self._ik_safe(pick_chk) is None):
+                self._current = None
+                if self.fruit_queue:
+                    self._start_move(ee_pos, self.HOME_POS, self.T_TRANSIT)
+                    self.state = S_GO_HOME
+                else:
+                    self.state = S_DONE
+            else:
+                self._start_move(ee_pos, approach, self.T_TRANSIT)
+                self.state = S_APPROACH
 
         elif self.state == S_APPROACH:
             if self._track(ee_pos, 0.0):
-                pick = self._current['pos'].copy(); pick[2] = self.PICK_Z
+                pick = self._current['pos'].copy()
+                pick[2] = self._compute_pick_z(self._current['pos'])
                 self._start_move(ee_pos, pick, self.T_PICK)
                 self.state = S_DESCEND
 
@@ -167,7 +188,12 @@ class StepController:
         elif self.state == S_DONE:
             self._hold(self.HOME_POS, 0.0)
 
-        phi = inverse_kinematics(self._last_ee, gamma=0.0)
+        # Guarded IK — on failure, hold the last commanded joints so a
+        # Simulink solver step doesn't raise into the model runner.
+        phi = self._ik_safe(self._last_ee)
+        if phi is None:
+            phi = getattr(self, "_last_phi", np.zeros(4))
+        self._last_phi = np.asarray(phi, dtype=float).copy()
         done = 1 if self.state == S_DONE else 0
         return phi, float(self._last_gripper), int(self.state), int(done)
 
@@ -192,3 +218,25 @@ class StepController:
     def _hold(self, ee_pos, gripper):
         self._last_ee = np.asarray(ee_pos, dtype=float).copy()
         self._last_gripper = float(gripper)
+
+    # ------------------------------------------------------------------
+    def _compute_pick_z(self, fruit_xyz):
+        """Z to descend to for a pick. Uses detected fruit_z minus an
+        offset so the gripper straddles the fruit, clamped to the
+        PICK_Z absolute floor so we never drive into the table."""
+        return max(float(self.PICK_Z), float(fruit_xyz[2]) - self.PICK_OFFSET)
+
+    def _ik_safe(self, target_pos):
+        """Return IK joints for target_pos or None if unreachable / over
+        joint limit. Used for pre-flight reachability checks and to guard
+        the per-step IK call so Simulink solver steps don't raise."""
+        try:
+            phi = inverse_kinematics(target_pos, gamma=0.0)
+        except Exception:
+            return None
+        phi = np.asarray(phi, dtype=float)
+        for i in range(4):
+            lo, hi = self.JOINT_LIMITS[i]
+            if phi[i] < lo or phi[i] > hi:
+                return None
+        return phi

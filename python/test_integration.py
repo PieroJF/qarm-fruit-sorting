@@ -269,6 +269,29 @@ def test_quintic_boundary_conditions():
     return name, True, "v=0, a=0 at both endpoints; midpoint exact"
 
 
+def test_detect_and_project_fixed_shape():
+    """detect_and_project returns a fixed-size matrix even when fewer
+    fruits are detected than N_MAX (required for the MATLAB/Simulink
+    MATLAB Function block contract)."""
+    name = "detect_and_project_matrix"
+    from fruit_detector import detect_and_project, N_MAX_DEFAULT
+    bgr, depth = synthetic_scene()
+    intr = {'fx': 907.2, 'fy': 906.8, 'cx': 645.0, 'cy': 356.7}
+    T = np.eye(4)  # identity: cam coords = base coords
+    out, count = detect_and_project(bgr, depth, intr, T)
+    assert out.shape == (N_MAX_DEFAULT, 5), \
+        f"shape {out.shape} != ({N_MAX_DEFAULT}, 5)"
+    assert 2 <= count <= 3, f"expected 2-3 detections, got {count}"
+    # Each valid row has type_id in {1,2,3}
+    for i in range(count):
+        tid = int(out[i, 0])
+        assert tid in (1, 2, 3), f"row {i} bad tid {tid}"
+    # Unused rows are zeros
+    for i in range(count, N_MAX_DEFAULT):
+        assert np.all(out[i, :] == 0), f"row {i} not zeroed: {out[i]}"
+    return name, True, f"{count} rows populated, {N_MAX_DEFAULT-count} zeroed"
+
+
 def test_sim_controller():
     """StepController (Simulink-facing twin) runs without raising."""
     name = "sim_controller_step_api"
@@ -302,17 +325,65 @@ def test_sim_controller():
     return name, True, f"2/2 sorted in step API"
 
 
+def test_sim_controller_skips_unreachable():
+    """StepController must pre-flight IK and skip unreachable fruits
+    without raising out of the step() call (Simulink needs this)."""
+    name = "sim_controller_skips_unreachable"
+    from sorting_controller_sim import StepController, S_DONE
+
+    # First is far outside workspace, second is reachable
+    positions = [np.array([2.5, 0.0, 0.5]),
+                 np.array([0.35, 0.10, 0.13])]
+    types = ["strawberry", "tomato"]
+    sc = StepController(fruit_positions=positions, fruit_types=types)
+    sc.T_TRANSIT = 0.2; sc.T_APPROACH = 0.1; sc.T_PICK = 0.1; sc.T_DWELL = 0.05
+
+    dt = 0.01
+    joints = np.zeros(4, dtype=float)
+    for _ in range(8000):
+        phi, grip, state_id, done = sc.step(joints, dt)
+        joints = np.asarray(phi, dtype=float).reshape(4)
+        if done:
+            break
+    else:
+        raise AssertionError("StepController hung on unreachable fruit")
+
+    assert sc.state == S_DONE, f"final state {sc.state} != DONE"
+    assert sc.sorted_count == 1, \
+        f"expected 1 sort (reachable only), got {sc.sorted_count}"
+    return name, True, "unreachable skipped, reachable sorted"
+
+
+def test_sim_controller_uses_detected_z():
+    """_compute_pick_z must use the detected fruit Z instead of PICK_Z when
+    the detected value is above PICK_Z."""
+    name = "sim_controller_pick_z"
+    from sorting_controller_sim import StepController
+    sc = StepController()
+    # Floor behavior: detected 0.01 below the floor -> clamp to PICK_Z
+    z_low = sc._compute_pick_z(np.array([0.3, 0.1, 0.005]))
+    assert z_low == sc.PICK_Z, f"low fruit not clamped: {z_low}"
+    # Above floor: use fruit_z - offset
+    z_high = sc._compute_pick_z(np.array([0.3, 0.1, 0.15]))
+    expected = 0.15 - sc.PICK_OFFSET
+    assert abs(z_high - expected) < 1e-9, f"expected {expected}, got {z_high}"
+    return name, True, "pick_z clamps floor and subtracts offset"
+
+
 # ------------------------------------------------------------------------
 # Runner
 # ------------------------------------------------------------------------
 TESTS = [
     test_fruit_detection,
     test_detection_depth_rejects_background,
+    test_detect_and_project_fixed_shape,
     test_quintic_boundary_conditions,
     test_controller_full_cycle_pick_only,
     test_controller_skips_unreachable,
     test_controller_full_sort_mode,
     test_sim_controller,
+    test_sim_controller_skips_unreachable,
+    test_sim_controller_uses_detected_z,
 ]
 
 

@@ -210,6 +210,55 @@ def _extract_red_blobs(mask, hsv, detections, min_area):
         ))
 
 
+FRUIT_TYPE_ID = {'strawberry': 1, 'tomato': 2, 'banana': 3}
+N_MAX_DEFAULT = 16  # max rows in the fixed-size matrix returned to MATLAB
+
+
+def detect_and_project(bgr_image, depth_image, intrinsics, T_cam_to_base,
+                        n_max=N_MAX_DEFAULT):
+    """Detect fruits in a single BGR+depth frame, project each to the robot
+    base frame, and return a fixed-shape matrix suitable for a Simulink
+    MATLAB Function block.
+
+    Returns
+    -------
+    out : np.ndarray, shape (n_max, 5), dtype float64
+        Each row is [type_id, wx, wy, wz, confidence]. type_id:
+        1=strawberry, 2=tomato, 3=banana, 0=empty. Unused rows are zeros.
+    count : int
+        Number of valid detections (0 <= count <= n_max).
+
+    Detections with no plausible depth (blob median outside [200,700] mm)
+    are silently skipped so the MATLAB side doesn't get garbage positions.
+    """
+    out = np.zeros((int(n_max), 5), dtype=np.float64)
+    if bgr_image is None or depth_image is None:
+        return out, 0
+    fx = float(intrinsics['fx']); fy = float(intrinsics['fy'])
+    cx = float(intrinsics['cx']); cy = float(intrinsics['cy'])
+    T = np.asarray(T_cam_to_base, dtype=float).reshape(4, 4)
+
+    dets = detect_fruits(bgr_image, depth_image)
+    i = 0
+    for d in dets:
+        if i >= n_max:
+            break
+        dmm = detection_depth_mm(d, depth_image)
+        if dmm is None:
+            continue
+        row, col = d.centroid
+        Z = dmm / 1000.0
+        X = (col - cx) * Z / fx
+        Y = (row - cy) * Z / fy
+        p_cam = np.array([X, Y, Z, 1.0])
+        p_base = T @ p_cam
+        tid = FRUIT_TYPE_ID.get(d.fruit_type, 0)
+        out[i, :] = [tid, p_base[0], p_base[1], p_base[2],
+                     float(d.confidence)]
+        i += 1
+    return out, i
+
+
 def draw_detections(bgr_image, detections):
     """Draw bounding boxes and labels on an image (for visualization)."""
     colors = {
