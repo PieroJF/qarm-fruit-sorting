@@ -184,7 +184,8 @@ def check_offline_tests():
 
 def check_visual_reference():
     if not os.path.exists(REF_FRAME) or not os.path.exists(BASELINE):
-        return False, "reference or baseline missing — run with --capture-ref"
+        return False, ("reference or baseline missing — follow "
+                        "LAB_RUNBOOK 'Visual reference snapshot' section")
     if not os.path.exists(REF_TCP):
         return False, "ref TCP sidecar missing — capture reference first"
     try:

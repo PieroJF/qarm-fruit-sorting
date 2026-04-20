@@ -80,7 +80,7 @@ function build_autonomous_stateflow()
     % Subsequent transitions (INIT -> GO_HOME -> SELECT -> APPROACH -> ...)
     pairs = {
         'INIT','GO_HOME','t_transit > 2.0';
-        'GO_HOME','SELECT','~isempty(py.sorting_controller.fruit_queue)';
+        'GO_HOME','SELECT','~isempty(py.sorting_controller.fruit_queue())';
         'SELECT','APPROACH','true';
         'APPROACH','DESCEND','t_transit > 2.0';
         'DESCEND','CLOSE_GRIP','t_transit > 0.8';
@@ -90,7 +90,7 @@ function build_autonomous_stateflow()
         'DESCEND_PLACE','OPEN_GRIP','t_transit > 1.0';
         'OPEN_GRIP','ASCEND_PLACE','t_transit > 0.8';
         'ASCEND_PLACE','GO_HOME','t_transit > 1.0';
-        'GO_HOME','DONE','isempty(py.sorting_controller.fruit_queue)'};
+        'GO_HOME','DONE','isempty(py.sorting_controller.fruit_queue())'};
     for r = 1:size(pairs, 1)
         tr = Stateflow.Transition(chart);
         tr.Source = state_objs.(pairs{r, 1});
