@@ -49,8 +49,14 @@ def collect_frames(n=20, out_dir=CAPTURE_DIR):
     print(f"Show the chessboard from {n} different angles/distances.")
     print("Press ENTER in this terminal to capture each pose; 'q' to abort.")
     i = 0
+    detect_flags = (cv2.CALIB_CB_ADAPTIVE_THRESH +
+                    cv2.CALIB_CB_NORMALIZE_IMAGE)
     while i < n:
-        input(f"  [{i + 1}/{n}] position chessboard, then ENTER: ")
+        reply = input(f"  [{i + 1}/{n}] position chessboard, ENTER "
+                       f"(q=quit): ")
+        if reply.strip().lower() == "q":
+            print(f"aborted at {i}/{n}")
+            return
         try:
             frame = capture()
         except Exception as ex:
@@ -58,9 +64,12 @@ def collect_frames(n=20, out_dir=CAPTURE_DIR):
             continue
         path = os.path.join(out_dir, f"chess_{i:02d}.png")
         cv2.imwrite(path, frame)
-        # Quick check: did we find the corners?
+        # Quick check: did we find the corners? Use adaptive-threshold +
+        # normalize flags — much higher detection rate under lab lighting
+        # with auto white-balance drift.
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        found, _ = cv2.findChessboardCorners(gray, INNER_CORNERS, None)
+        found, _ = cv2.findChessboardCorners(gray, INNER_CORNERS,
+                                              detect_flags)
         print(f"    saved {path}  chessboard_detected={found}")
         if found:
             i += 1
@@ -93,7 +102,9 @@ def solve(in_dir=CAPTURE_DIR, out_json=DEFAULT_JSON):
             continue
         gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
         gray_shape = gray.shape[::-1]
-        found, corners = cv2.findChessboardCorners(gray, INNER_CORNERS, None)
+        found, corners = cv2.findChessboardCorners(
+            gray, INNER_CORNERS,
+            cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE)
         if not found:
             continue
         corners = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
