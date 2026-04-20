@@ -67,10 +67,38 @@ def test_small_difference_rejected():
     assert tcp is None, f"expected None for 1-pixel change, got {tcp}"
 
 
+def test_tcp_picks_largest_top_touching_component():
+    """When multiple silhouettes touch the top edge, pick the largest
+    (= the arm, not a shadow strip)."""
+    baseline = _synth_baseline()
+    frame = baseline.copy()
+    # Small shadow strip at top-left — touches y=0, small area
+    cv2.rectangle(frame, (50, 0), (70, 40), 40, -1)
+    # Full arm at center — touches y=0, much larger area
+    cv2.rectangle(frame, (310, 0), (330, 260), 40, -1)
+    cv2.circle(frame, (320, 265), 15, 30, -1)
+    tcp = tcp_from_diff(frame, baseline)
+    assert tcp is not None
+    col, _ = tcp
+    assert 300 < col < 340, f"picked shadow instead of arm: col={col}"
+
+
+def test_rejects_whole_frame_diff():
+    """Global lighting shift must not be treated as 'arm fills frame'.
+    Cap the allowed mask fraction to guard auto-white-balance drift."""
+    baseline = _synth_baseline()
+    # Simulate a whole-frame brightness shift of 40 gray levels
+    frame = np.clip(baseline.astype(np.int16) + 40, 0, 255).astype(np.uint8)
+    tcp = tcp_from_diff(frame, baseline)
+    assert tcp is None, f"should reject full-frame diff, got {tcp}"
+
+
 if __name__ == "__main__":
     fails = 0
     for t in [test_diff_finds_arm_tip, test_no_arm_returns_none,
-              test_baseline_roundtrip, test_small_difference_rejected]:
+              test_baseline_roundtrip, test_small_difference_rejected,
+              test_tcp_picks_largest_top_touching_component,
+              test_rejects_whole_frame_diff]:
         try:
             t()
             print(f"  [OK]   {t.__name__}")

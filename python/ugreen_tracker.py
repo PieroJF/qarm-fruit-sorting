@@ -16,6 +16,8 @@ import numpy as np
 UGREEN_IDX = 3
 DIFF_THRESH = 35            # absolute mean channel diff to count a pixel as "arm"
 MIN_ARM_PIXELS = 500        # total arm silhouette must exceed this
+MAX_ARM_PIXELS_FRAC = 0.50  # reject masks that cover > 50% of frame
+                            # (catches global lighting shifts / auto-WB drift)
 DEFAULT_WIDTH = 1280
 DEFAULT_HEIGHT = 720
 
@@ -90,11 +92,15 @@ def tcp_from_diff(frame, baseline, thresh=DIFF_THRESH,
     4. Return the bottom-center pixel of that component's bounding box.
     """
     mask = arm_mask(frame, baseline, thresh=thresh)
-    if int((mask > 0).sum()) < min_pixels:
+    mask_pixels = int((mask > 0).sum())
+    if mask_pixels < min_pixels:
         return None
+    if mask_pixels > MAX_ARM_PIXELS_FRAC * int(mask.size):
+        return None  # global lighting shift — not a real arm
     num, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
     best_i = -1
     best_area = 0
+    best_bbox = None
     for i in range(1, num):  # skip background label 0
         x = stats[i, cv2.CC_STAT_LEFT]
         y = stats[i, cv2.CC_STAT_TOP]
