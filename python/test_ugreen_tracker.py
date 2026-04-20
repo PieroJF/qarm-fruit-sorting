@@ -93,12 +93,28 @@ def test_rejects_whole_frame_diff():
     assert tcp is None, f"should reject full-frame diff, got {tcp}"
 
 
+def test_intrinsics_io_roundtrip():
+    """Save/load for UGreen intrinsics + distortion."""
+    import tempfile, json
+    from ugreen_intrinsics import save_intrinsics, load_intrinsics
+    tmp = tempfile.mkdtemp()
+    path = os.path.join(tmp, "intr.json")
+    intr = {'fx': 600.0, 'fy': 601.0, 'cx': 320.0, 'cy': 240.0}
+    dist = np.array([0.1, -0.2, 0.001, 0.002, 0.05], dtype=np.float64)
+    save_intrinsics(path, intr, dist)
+    intr2, dist2 = load_intrinsics(path)
+    for k in intr:
+        assert abs(intr[k] - intr2[k]) < 1e-9
+    assert np.allclose(dist, dist2)
+
+
 if __name__ == "__main__":
     fails = 0
     for t in [test_diff_finds_arm_tip, test_no_arm_returns_none,
               test_baseline_roundtrip, test_small_difference_rejected,
               test_tcp_picks_largest_top_touching_component,
-              test_rejects_whole_frame_diff]:
+              test_rejects_whole_frame_diff,
+              test_intrinsics_io_roundtrip]:
         try:
             t()
             print(f"  [OK]   {t.__name__}")
