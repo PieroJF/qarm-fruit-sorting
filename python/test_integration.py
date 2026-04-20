@@ -429,6 +429,39 @@ def test_sorting_controller_emits_trace_events():
     return name, True, "3/3 trace events emitted"
 
 
+def test_remote_jog_clamps_workspace():
+    """Cartesian nudges that would leave the workspace box are refused."""
+    name = "remote_jog_workspace_clamp"
+    from remote_jog import cartesian_nudge, WORKSPACE_BOX
+    # Near +X edge
+    cur = np.array([WORKSPACE_BOX['x'][1] - 0.002, 0.0, 0.15])
+    out = cartesian_nudge(cur, axis='x', step=0.01)  # would leave box
+    assert out is None, f"expected clamp, got {out}"
+    # Middle of box, small step, stays inside
+    cur = np.array([0.30, 0.00, 0.15])
+    out = cartesian_nudge(cur, axis='x', step=0.01)
+    assert out is not None
+    assert abs(out[0] - 0.31) < 1e-9
+    return name, True, "clamps edge, accepts middle"
+
+
+def test_remote_joint_jog_clamps_limits():
+    name = "remote_joint_jog_clamp"
+    from remote_jog import joint_nudge
+    from qarm_driver import QArmDriver
+    lims = QArmDriver.JOINT_LIMITS
+    # Near upper limit on joint 1
+    cur = np.array([lims[0, 1] - 0.001, 0, 0, 0], dtype=float)
+    out = joint_nudge(cur, joint=0, step=np.deg2rad(5))
+    assert out is None, "should clamp"
+    # Middle of range
+    cur = np.array([0.0, 0.0, 0.0, 0.0])
+    out = joint_nudge(cur, joint=0, step=np.deg2rad(5))
+    assert out is not None
+    assert abs(out[0] - np.deg2rad(5)) < 1e-9
+    return name, True, "clamps edge, accepts middle"
+
+
 # ------------------------------------------------------------------------
 # Runner
 # ------------------------------------------------------------------------
@@ -445,6 +478,8 @@ TESTS = [
     test_sim_controller_uses_detected_z,
     test_set_gripper_ramp_extracted,
     test_sorting_controller_emits_trace_events,
+    test_remote_jog_clamps_workspace,
+    test_remote_joint_jog_clamps_limits,
 ]
 
 
