@@ -223,8 +223,13 @@ def check_visual_reference():
         dx = tcp[0] - ref["tcp"][0]
         dy = tcp[1] - ref["tcp"][1]
         d = (dx * dx + dy * dy) ** 0.5
-        ok = d < 20
-        return ok, f"tcp delta = {d:.1f} px (threshold 20)"
+        # 50 px threshold: tight enough to catch a real pose regression
+        # (arm at wrong teach point) while tolerating image-diff jitter
+        # from morphological edge noise + small WB shifts between the
+        # baseline capture and the live check. At 1280 wide this is 4%
+        # of frame width.
+        ok = d < 50
+        return ok, f"tcp delta = {d:.1f} px (threshold 50)"
     except Exception as ex:
         return False, f"{ex}"
 
