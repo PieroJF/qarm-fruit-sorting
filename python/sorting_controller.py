@@ -442,3 +442,73 @@ class FruitSortingController:
     def _print_state(self, msg):
         """Print state transition message."""
         print(f"  [{self.state.name:20s}] {msg}")
+
+
+# Module-level wrappers for Stateflow entry actions. Stateflow stores
+# state IDs; the actual compute lives here so Python tests cover it.
+
+_stateflow_ctx = {'controller': None}
+
+
+def stateflow_init(fruit_positions=None, fruit_types=None,
+                    pick_only=False):
+    """Called once by Stateflow's INIT entry action. Builds the shared
+    controller instance."""
+    from qarm_driver import QArmDriver
+    q = QArmDriver(); q.connect()
+    c = FruitSortingController(q, pick_only=pick_only)
+    if fruit_positions is not None:
+        c.set_fruit_positions(fruit_positions, fruit_types)
+    _stateflow_ctx['controller'] = c
+    return True
+
+
+def stateflow_select(joints_cur):
+    """Pick the next reachable fruit or signal 'queue empty'. Returns
+    the approach-phi vector (length 4) or an empty list when queue is
+    empty / no reachable fruit."""
+    c = _stateflow_ctx.get('controller')
+    if c is None or not c.fruit_queue:
+        return []
+    # Reuse the pre-flight reachability test already in
+    # _step -> SELECT_FRUIT. Pull the next fruit, check, skip if bad.
+    while c.fruit_queue:
+        target = c.fruit_queue[0]
+        approach = target['pos'].copy(); approach[2] = c.APPROACH_Z
+        pick = target['pos'].copy()
+        pick[2] = c._compute_pick_z(target['pos'])
+        if c._ik_safe(approach) is None or c._ik_safe(pick) is None:
+            c.fruit_queue.pop(0)
+            if c.logger: c.logger.log("PRE_FLIGHT_SKIP",
+                                        type=target['type'])
+            continue
+        c.current_target = c.fruit_queue.pop(0)
+        c.target_basket = c.BASKETS.get(c.current_target['type'],
+                                          c.BASKETS['tomato'])
+        phi = c._ik_safe(approach)
+        return phi.tolist()
+    return []
+
+
+def stateflow_close_grip():
+    """Ramp gripper closed, return settled value. Blocking."""
+    c = _stateflow_ctx.get('controller')
+    if c is None: return 0.15
+    return c.set_gripper_ramp(GRIP_CLOSE)
+
+
+def stateflow_open_grip():
+    c = _stateflow_ctx.get('controller')
+    if c is None: return GRIP_OPEN
+    return c.set_gripper_ramp(GRIP_OPEN)
+
+
+def stateflow_sorted_count():
+    c = _stateflow_ctx.get('controller')
+    return c.sorted_count if c is not None else 0
+
+
+def fruit_queue():
+    """Exposed for Stateflow transition guards."""
+    c = _stateflow_ctx.get('controller')
+    return c.fruit_queue if c is not None else []
