@@ -42,39 +42,74 @@ def load_intrinsics(path=DEFAULT_JSON):
 
 
 def collect_frames(n=20, out_dir=CAPTURE_DIR):
-    """Interactively capture n chessboard views from the UGreen.
-    Requires hardware. Called from __main__."""
-    from ugreen_tracker import capture
+    """Live-preview chessboard capture. The UGreen feed is shown in an
+    OpenCV window with detected corners overlaid in real time. Press
+    SPACE to save the current pose (only counts if corners are detected);
+    press 'q' or ESC to quit early. Requires hardware."""
+    from ugreen_tracker import UGREEN_IDX
     os.makedirs(out_dir, exist_ok=True)
-    print(f"Show the chessboard from {n} different angles/distances.")
-    print("Press ENTER in this terminal to capture each pose; 'q' to abort.")
-    i = 0
     detect_flags = (cv2.CALIB_CB_ADAPTIVE_THRESH +
                     cv2.CALIB_CB_NORMALIZE_IMAGE)
-    while i < n:
-        reply = input(f"  [{i + 1}/{n}] position chessboard, ENTER "
-                       f"(q=quit): ")
-        if reply.strip().lower() == "q":
-            print(f"aborted at {i}/{n}")
-            return
-        try:
-            frame = capture()
-        except Exception as ex:
-            print(f"    capture failed: {ex}")
-            continue
-        path = os.path.join(out_dir, f"chess_{i:02d}.png")
-        cv2.imwrite(path, frame)
-        # Quick check: did we find the corners? Use adaptive-threshold +
-        # normalize flags — much higher detection rate under lab lighting
-        # with auto white-balance drift.
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        found, _ = cv2.findChessboardCorners(gray, INNER_CORNERS,
-                                              detect_flags)
-        print(f"    saved {path}  chessboard_detected={found}")
-        if found:
-            i += 1
-        else:
-            print("    retry — chessboard not detected, try better angle/lighting")
+    WINDOW = "UGreen — chessboard collect  (SPACE=save, Q=quit)"
+
+    print(f"Need {n} detected poses. Live preview in a new window.")
+    print("  GREEN overlay + corners = detected; press SPACE to save.")
+    print("  RED message = no pattern found; reposition and try again.")
+    print("  Q or ESC = quit early.")
+
+    cap = cv2.VideoCapture(UGREEN_IDX, cv2.CAP_MSMF)
+    if not cap.isOpened():
+        raise RuntimeError(f"UGreen did not open (idx={UGREEN_IDX} MSMF)")
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    cv2.namedWindow(WINDOW, cv2.WINDOW_AUTOSIZE)
+
+    i = 0
+    try:
+        while i < n:
+            ok, frame = cap.read()
+            if not ok or frame is None or frame.size == 0:
+                continue
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            found, corners = cv2.findChessboardCorners(
+                gray, INNER_CORNERS, detect_flags)
+
+            vis = frame.copy()
+            if found:
+                cv2.drawChessboardCorners(vis, INNER_CORNERS, corners, found)
+                msg = f"[{i+1}/{n}] DETECTED — press SPACE to save"
+                color = (0, 255, 0)
+            else:
+                msg = f"[{i+1}/{n}] no chessboard — reposition"
+                color = (0, 0, 255)
+
+            cv2.putText(vis, msg, (20, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4)
+            cv2.putText(vis, msg, (20, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+            cv2.imshow(WINDOW, vis)
+
+            key = cv2.waitKey(30) & 0xFF
+            if key == ord('q') or key == 27:
+                print(f"aborted at {i}/{n}")
+                break
+            if key == 32:  # SPACE
+                if not found:
+                    print("  [skip] no chessboard in current frame")
+                    continue
+                path = os.path.join(out_dir, f"chess_{i:02d}.png")
+                cv2.imwrite(path, frame)
+                print(f"  [{i+1}/{n}] saved {path}")
+                i += 1
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+
+    if i < n:
+        print(f"collected {i}/{n} poses — re-run 'collect' to add more "
+              f"or run 'solve' if satisfied.")
+    else:
+        print(f"done — {n}/{n} poses captured. Run 'solve' next.")
 
 
 def solve(in_dir=CAPTURE_DIR, out_json=DEFAULT_JSON):
