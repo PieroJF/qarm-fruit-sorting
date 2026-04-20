@@ -60,7 +60,7 @@ class FruitSortingController:
     T_DWELL = 0.5
     T_GRIP = 0.8           # gripper open/close interpolation time
 
-    def __init__(self, qarm, camera=None, pick_only=False):
+    def __init__(self, qarm, camera=None, pick_only=False, logger=None):
         """
         Parameters
         ----------
@@ -70,10 +70,15 @@ class FruitSortingController:
             Camera for fruit detection.
         pick_only : bool
             If True, just pick up and lift each fruit (no basket placement).
+        logger : TraceLogger, optional
+            Event logger. When provided, the FSM emits PICK_ATTEMPT,
+            GRIPPER_READBACK, and SORT_COMPLETE events for postprocessing
+            by scripts/generate_report_plots.py.
         """
         self.qarm = qarm
         self.camera = camera
         self.pick_only = pick_only
+        self.logger = logger
         self.state = State.INIT
         self.fruit_queue = []
         self.current_target = None
@@ -144,10 +149,20 @@ class FruitSortingController:
         print(f"\n=== SORTING COMPLETE ===")
         print(f"Sorted {self.sorted_count} fruits in {total_time:.1f} seconds")
 
+    def _log(self, tag, **kv):
+        """Forward an event to the attached TraceLogger if any."""
+        if self.logger is not None:
+            self.logger.log(tag, **kv)
+
     def _step(self, t):
         """Execute one step of the state machine."""
         joints, gripper = self.qarm.read_all()
         ee_pos, _ = forward_kinematics(joints)
+
+        # One-shot SORT_COMPLETE when DONE is first entered.
+        if self.state == State.DONE and not getattr(self, "_done_logged", False):
+            self._log("SORT_COMPLETE", sorted=self.sorted_count)
+            self._done_logged = True
 
         if self.state == State.GO_HOME:
             # Arm trajectory exactly once per entry into GO_HOME.
@@ -189,6 +204,9 @@ class FruitSortingController:
                 self._traj_end_pos = None
                 self.state = State.GO_HOME
                 return
+            self._log("PICK_ATTEMPT",
+                       type=self.current_target['type'],
+                       pos=self.current_target['pos'])
             self._start_move(ee_pos, approach_pos, self.T_TRANSIT)
             self.state = State.APPROACH
             self._print_state(f"Approaching {self.current_target['type']}")
@@ -220,6 +238,10 @@ class FruitSortingController:
                     self._held_grip = float(actual)
                 except Exception:
                     self._held_grip = GRIP_CLOSE
+                self._log("GRIPPER_READBACK",
+                           target=GRIP_CLOSE,
+                           actual=self._held_grip,
+                           stall=(GRIP_CLOSE - self._held_grip))
                 ascend_pos = ee_pos.copy()
                 ascend_pos[2] = self.SAFE_Z
                 self._start_move(ee_pos, ascend_pos, self.T_APPROACH)

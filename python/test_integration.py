@@ -394,6 +394,41 @@ def test_set_gripper_ramp_extracted():
     return name, True, f"ramp over {len(unique)} values, held_grip correct"
 
 
+def test_sorting_controller_emits_trace_events():
+    """When a logger is passed to FruitSortingController, it should emit
+    PICK_ATTEMPT, GRIPPER_READBACK, and SORT_COMPLETE events during a
+    pick-only run."""
+    name = "controller_trace_events"
+    from sorting_controller import FruitSortingController, State
+    from trace_logger import TraceLogger
+    import tempfile, os
+    tmp = tempfile.mkdtemp()
+    log_path = os.path.join(tmp, "test.log")
+    logger = TraceLogger(log_path)
+
+    q = MockQArm()
+    c = FruitSortingController(q, pick_only=True, logger=logger)
+    c.T_TRANSIT = 0.02; c.T_APPROACH = 0.02; c.T_PICK = 0.02
+    c.T_DWELL = 0.01; c.T_GRIP = 0.01
+    c.set_fruit_positions([[0.35, 0.10, 0.13]], ["strawberry"])
+    c.state = State.GO_HOME
+    for _ in range(3000):
+        c._step(time.time())
+        time.sleep(0.001)
+        if c.state == State.DONE:
+            # Run one extra step so the DONE event fires.
+            c._step(time.time())
+            break
+    logger.close()
+
+    with open(log_path) as f:
+        log = f.read()
+    assert "PICK_ATTEMPT" in log, "no PICK_ATTEMPT event"
+    assert "GRIPPER_READBACK" in log, "no GRIPPER_READBACK event"
+    assert "SORT_COMPLETE" in log, "no SORT_COMPLETE event"
+    return name, True, "3/3 trace events emitted"
+
+
 # ------------------------------------------------------------------------
 # Runner
 # ------------------------------------------------------------------------
@@ -409,6 +444,7 @@ TESTS = [
     test_sim_controller_skips_unreachable,
     test_sim_controller_uses_detected_z,
     test_set_gripper_ramp_extracted,
+    test_sorting_controller_emits_trace_events,
 ]
 
 

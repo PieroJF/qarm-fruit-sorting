@@ -54,51 +54,8 @@ LOG_DIR = os.path.abspath(
 )
 
 
-class TraceLogger:
-    """Append-only, flush-per-write event log for post-mortem analysis.
-    One line per event: [ISO timestamp] TAG  key=val key=val ...
-    Also mirrors to stdout with the same format.
-    """
+from trace_logger import TraceLogger
 
-    def __init__(self, path):
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        self.path = path
-        self.f = open(path, "a", buffering=1)  # line-buffered
-        self.t0 = time.time()
-        self.log("SESSION_START", ts=datetime.now().isoformat(timespec="seconds"))
-
-    @staticmethod
-    def _fmt_val(v):
-        if isinstance(v, (list, tuple, np.ndarray)):
-            arr = np.asarray(v, dtype=float)
-            return "[" + ",".join(f"{x:.4f}" for x in arr.flatten()) + "]"
-        if isinstance(v, float):
-            return f"{v:.4f}"
-        return str(v)
-
-    def log(self, tag, **kv):
-        t = time.time() - self.t0
-        parts = [f"t={t:.3f}", f"TAG={tag}"]
-        for k, v in kv.items():
-            parts.append(f"{k}={self._fmt_val(v)}")
-        line = "  ".join(parts)
-        try:
-            self.f.write(line + "\n")
-        except Exception:
-            pass
-        # Also echo important events to stderr
-        if tag in ("SESSION_START", "HIL_ERROR", "IK_FAIL",
-                   "JOINT_LIMIT", "EXCEPT", "ROUTINE_START",
-                   "ROUTINE_DONE", "GOTO", "GRIPPER_CMD"):
-            sys.stderr.write("[trace] " + line + "\n")
-            sys.stderr.flush()
-
-    def close(self):
-        try:
-            self.log("SESSION_END")
-            self.f.close()
-        except Exception:
-            pass
 
 DEFAULT_LIN_STEP = 0.005          # 5 mm
 DEFAULT_ROT_STEP = np.deg2rad(5)  # 5 deg
