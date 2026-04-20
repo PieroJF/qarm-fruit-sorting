@@ -63,6 +63,9 @@ def check_qarm():
     except Exception as ex:
         return False, f"driver: {ex}"
     finally:
+        # Skip q.disconnect() — it homes the arm (moves to joints=0)
+        # which we do NOT want during preflight. Release the HAL card
+        # directly and flip the private flag so the driver cleans up.
         try: q.card.close()
         except Exception: pass
         q._connected = False
