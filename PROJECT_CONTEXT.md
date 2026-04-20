@@ -1,6 +1,14 @@
 # FinalProject_FruitSorting — Project Context Snapshot
 
-_Generated: 2026-04-14. Deadline: **Fri 1 May 2026, 14:00**._
+_Last updated: 2026-04-20. Deadline: **Fri 1 May 2026, 14:00**._
+
+> **State-of-sprint** (2026-04-20): 14/14 integration tests + 7/7 UGreen tracker tests + 2/2 closed-loop calibration tests. Phase A of the final-sprint plan (`docs/superpowers/plans/2026-04-20-final-sprint.md`) is complete through Task A7.5. Phase B (lab hardware) pending session access.
+>
+> **Key architectural finding (2026-04-17 lab session):** the D415 camera is **arm-mounted on the QArm wrist**. `T_cam_to_base` is pose-dependent — the calibration is derived at `pickhome1` and is only valid at that pose. See `recal_from_pose.py` for the per-pose workaround. Proper hand-eye (AX=XB) solve was descoped — we added a UGreen floor-level camera instead, which gives an external fixed reference for closed-loop visual calibration and pick validation via image diff.
+>
+> **Spec + plan:** `docs/superpowers/specs/2026-04-20-final-sprint-design.md` and `docs/superpowers/plans/2026-04-20-final-sprint.md` are the source of truth for the remaining work.
+>
+> **Lab runbook:** `LAB_RUNBOOK.md` documents session flow from power-on to shutdown.
 
 ## 1. Project Identity
 

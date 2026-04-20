@@ -1,9 +1,33 @@
 # FruitSorting — Progress Snapshot
 
-**Last updated:** 2026-04-14
+**Last updated:** 2026-04-20
 **Deadline:** 2026-05-01 14:00 (Applied Robotics final, University of Birmingham)
 **Team:** Piero Flores · Zihen Huang · Ran Zhang · Yichang Chao
 **Working directory:** `C:\Users\Mugin\Downloads\Compressed\Nueva carpeta_2\FinalProject_FruitSorting`
+
+---
+
+## 0. Sprint state (2026-04-20)
+
+Phase A of `docs/superpowers/plans/2026-04-20-final-sprint.md` **complete through A7.5** (all dev-machine work). Phase B awaits lab session access.
+
+Test suites all green:
+- `test_integration.py` — **14/14** (FSM cycles, IK safety, gripper ramp, quintic boundaries, remote jog clamps, trace events)
+- `test_ugreen_tracker.py` — **7/7** (image-diff TCP, baseline roundtrip, intrinsics IO, component selection, global-shift rejection)
+- `test_calibrate_closed_loop.py` — **2/2** (PnP recovery, near-coplanar robustness)
+
+Key findings from prior sessions now reflected in code:
+- **D415 is arm-mounted**: `T_cam_to_base` is pose-dependent. `main_final.py` moves to `pickhome1` before detecting.
+- **UGreen floor camera** integrated: `python/ugreen_tracker.py` extracts TCP via image diff, `calibrate_closed_loop.py` solves hand-eye via SQPnP + iterative refine, with a sanity gate (50 mm hard limit → `.rejected.json`, 20 mm warn → `status: warning`).
+- **Gripper ramp + readback** shared between autonomous FSM and remote jog via `set_gripper_ramp` on `FruitSortingController`.
+
+New modules this sprint:
+- `python/trace_logger.py` — extracted from `teach_points.py`; emits PICK_ATTEMPT / GRIPPER_READBACK / SORT_COMPLETE.
+- `python/ugreen_tracker.py`, `python/ugreen_intrinsics.py`, `python/calibrate_closed_loop.py`.
+- `python/remote_jog.py`, `python/remote_view.py`, `python/preflight.py`.
+- `scripts/generate_report_plots.py`, `scripts/print_chessboard.py`.
+- `matlab_facade/py_remote_view.m`, `matlab_facade/build_autonomous_stateflow.m`, `matlab_facade/build_hardware_model_v2.m`, `matlab_facade/remote_hmi.md`.
+- `LAB_RUNBOOK.md` at repo root.
 
 ---
 
