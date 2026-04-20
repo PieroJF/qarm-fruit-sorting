@@ -7,12 +7,19 @@ calibration.json (T_cam_to_base), connects QArm + D415 camera, detects fruits,
 and runs the complete pick-and-place FSM.
 
 Usage:
-    C:\\Python313\\python.exe main_final.py [--no-camera] [--dry-run] [--pick-only]
+    C:\\Python313\\python.exe main_final.py [--no-camera] [--dry-run]
+                                            [--pick-only] [--calib FILE]
+                                            [--detect-pose LABEL]
 
 Flags:
-    --no-camera   Skip live camera detection, use manual fruit list instead
-    --dry-run     Print the plan but don't move the arm
-    --pick-only   Just detect, pick up and lift each fruit (no basket sorting)
+    --no-camera        Skip live camera detection, use manual fruit list instead
+    --dry-run          Print the plan but don't move the arm
+    --pick-only        Just detect, pick up and lift each fruit (no basket sorting)
+    --calib FILE       Path to calibration JSON (default: ../calibration.json)
+    --detect-pose LBL  Teach-point label to move to before detecting fruits
+                       (default: pickhome1; must match the pose where the
+                       chosen calibration was derived — camera is arm-mounted
+                       so T_cam_to_base is pose-dependent).
 """
 
 import json
@@ -37,6 +44,37 @@ BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 TEACH_FILE = os.path.join(BASE_DIR, "teach_points.json")
 CALIB_FILE = os.path.join(BASE_DIR, "calibration.json")
 DETECT_SAVE = os.path.join(BASE_DIR, "figures", "detection_result.png")
+DEFAULT_DETECT_POSE = "pickhome1"
+
+
+def get_arg(flag, default=None):
+    """Pull `--flag VALUE` from sys.argv, returning VALUE or default."""
+    if flag in sys.argv:
+        i = sys.argv.index(flag)
+        if i + 1 < len(sys.argv):
+            return sys.argv[i + 1]
+    return default
+
+
+def slow_move_to_joints(qarm, target_joints, target_grip, seconds=3.0,
+                        steps=200):
+    """Smoothstep interpolation from current pose to target_joints. Holds
+    briefly at end so position-mode PID settles. Avoids the snap-to-target
+    that qarm.home() used in its default path."""
+    cj, cg = qarm.read_all()
+    cj = np.array(cj, dtype=float)
+    cg = float(cg)
+    for i in range(1, steps + 1):
+        a = i / steps
+        s = 3 * a * a - 2 * a * a * a
+        qarm.set_joints_and_gripper(
+            cj + s * (target_joints - cj),
+            cg + s * (target_grip - cg),
+        )
+        time.sleep(seconds / steps)
+    for _ in range(20):
+        qarm.set_joints_and_gripper(target_joints, target_grip)
+        time.sleep(0.05)
 
 
 def load_teach_points():
@@ -49,15 +87,17 @@ def load_teach_points():
     return pts
 
 
-def load_calibration():
-    if not os.path.exists(CALIB_FILE):
-        print(f"[warn] {CALIB_FILE} not found — T_cam_to_base = identity")
+def load_calibration(path=CALIB_FILE):
+    if not os.path.exists(path):
+        print(f"[warn] {path} not found — T_cam_to_base = identity")
         return np.eye(4)
-    with open(CALIB_FILE) as f:
+    with open(path) as f:
         cal = json.load(f)
     T = np.array(cal["T_cam_to_base"])
     rms = cal.get("rms_residual_mm", "?")
-    print(f"Loaded calibration: {cal['n_points']} points, RMS={rms} mm")
+    pose = cal.get("pose_label", "unspecified")
+    print(f"Loaded calibration from {os.path.basename(path)}: "
+          f"{cal['n_points']} points, RMS={rms} mm, pose={pose}")
     return T
 
 
@@ -85,17 +125,28 @@ def extract_home(pts):
 
 def detect_fruits_live(cam, T_cam_to_base):
     print("\nCapturing frame for fruit detection...")
-    # Warmup
-    for _ in range(15):
+    # Warmup — wait for a non-black color frame AND reasonable depth coverage.
+    # The D415 takes ~2-3 s to start producing usable depth; the previous
+    # bound of "color.mean() > 5" was often satisfied before depth was ready
+    # and the first detect_fruits call saw 0% valid depth.
+    deadline = time.time() + 10.0
+    color = np.zeros((720, 1280, 3), dtype=np.uint8)
+    depth = np.zeros((720, 1280), dtype=np.uint16)
+    while time.time() < deadline:
         try:
             color, depth = cam.read()
-            if color.mean() > 5:
-                break
+        except Exception:
+            pass
+        if color.mean() > 5 and (depth > 0).mean() > 0.10:
+            break
+        time.sleep(0.1)
+    # A few extra frames so auto-exposure has fully settled
+    for _ in range(10):
+        try:
+            color, depth = cam.read()
         except Exception:
             pass
         time.sleep(0.05)
-
-    color, depth = cam.read()
     print(f"  frame: {color.shape}, depth valid: {(depth > 0).mean():.0%}")
 
     dets = detect_fruits(color, depth)
@@ -127,19 +178,24 @@ def detect_fruits_live(cam, T_cam_to_base):
 
 
 def main():
-    flags = set(sys.argv[1:])
+    flags = set(a for a in sys.argv[1:] if not a.startswith("--")
+                or a in ("--no-camera", "--dry-run", "--pick-only"))
     use_camera = "--no-camera" not in flags
     dry_run = "--dry-run" in flags
     pick_only = "--pick-only" in flags
+    calib_path = get_arg("--calib", CALIB_FILE)
+    detect_pose = get_arg("--detect-pose", DEFAULT_DETECT_POSE)
 
     mode_label = "PICK & LIFT" if pick_only else "FULL SORT"
     print("=" * 60)
     print(f"  QArm Fruit Sorting — {mode_label}")
     print("=" * 60)
+    print(f"  calibration   : {calib_path}")
+    print(f"  detect pose   : {detect_pose}")
 
     # --- Load config ---
     pts = load_teach_points()
-    T_cam_to_base = load_calibration()
+    T_cam_to_base = load_calibration(calib_path)
 
     baskets = {}
     home_pos = None
@@ -181,9 +237,22 @@ def main():
             use_camera = False
 
     try:
-        # --- Home ---
-        print("\nHoming arm (5 s)...")
-        qarm.home(duration=5.0, steps=250)
+        # --- Move to detection pose (NOT joints=0) ---
+        # Camera is arm-mounted — T_cam_to_base is only valid at the pose
+        # where the calibration was derived. Detecting from joints=0 while
+        # using a calibration captured at pickhome1 produces wildly wrong
+        # world coordinates.
+        if pts and detect_pose in pts:
+            tp = pts[detect_pose]
+            target = np.array(tp["joints_rad"], dtype=float)
+            tg = float(tp.get("gripper", 0.15))
+            print(f"\nMoving to detection pose '{detect_pose}' (3 s)...")
+            slow_move_to_joints(qarm, target, tg, seconds=3.0)
+        else:
+            print(f"\n[warn] detection pose '{detect_pose}' not in "
+                  f"teach_points — homing to joints=0 instead "
+                  f"(calibration may be invalid here)")
+            qarm.home(duration=5.0, steps=250)
         time.sleep(0.5)
 
         # --- Detect fruits ---
@@ -234,8 +303,10 @@ def main():
         controller.set_fruit_positions(positions, types)
 
         # --- Run ---
+        # Drop the old 500 Hz (dt=0.002) passthrough — controller default
+        # (100 Hz) is sufficient for QArm motion bandwidth and frees CPU.
         t0 = time.time()
-        controller.run_autonomous(dt=0.002)
+        controller.run_autonomous()
         elapsed = time.time() - t0
 
         # --- Stats ---

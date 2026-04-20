@@ -8,7 +8,7 @@ import time
 from enum import Enum, auto
 
 from qarm_kinematics import forward_kinematics, inverse_kinematics
-from trajectory import cubic_trajectory
+from trajectory import quintic_trajectory
 
 GRIP_CLOSE = 0.90
 GRIP_OPEN = 0.15
@@ -312,7 +312,7 @@ class FruitSortingController:
             self._execute_position(self._traj_end_pos, gripper_val)
             return True
 
-        pos = cubic_trajectory(
+        pos = quintic_trajectory(
             self._traj_start_pos, self._traj_end_pos,
             self._traj_duration, elapsed
         )

@@ -1,9 +1,43 @@
 """
 Trajectory generation for the QArm.
-Cubic splines with zero-velocity boundary conditions.
+
+Cubic: zero velocity at start/end. Acceleration is NOT continuous at the
+boundaries (it jumps from a finite value to zero, which the servos see as
+a jerk impulse).
+
+Quintic: zero velocity AND zero acceleration at start/end. Jerk stays
+bounded across segment boundaries, resulting in much smoother motion —
+relevant for the QArm's geared drivetrain where jerk amplifies audibly
+and mechanically.
 """
 
 import numpy as np
+
+
+def quintic_trajectory(p_start, p_end, T, t):
+    """
+    Evaluate quintic polynomial trajectory at time t. Zero velocity AND
+    zero acceleration at both endpoints — jerk-continuous across segment
+    boundaries.
+
+    p(t) = p_start + (p_end - p_start) * s(tau), tau = t / T
+    s(tau) = 10*tau^3 - 15*tau^4 + 6*tau^5
+
+    Parameters
+    ----------
+    p_start, p_end : np.ndarray  - Start / end positions (any shape)
+    T              : float       - Segment duration (seconds)
+    t              : float       - Current time [0, T]
+
+    Returns
+    -------
+    pos : np.ndarray - Interpolated position at time t, same shape as p_start
+    """
+    if T <= 0:
+        return np.asarray(p_end, dtype=float).copy()
+    tau = np.clip(t / T, 0.0, 1.0)
+    s = 10 * tau**3 - 15 * tau**4 + 6 * tau**5
+    return p_start + s * (p_end - p_start)
 
 
 def cubic_trajectory(p_start, p_end, T, t):

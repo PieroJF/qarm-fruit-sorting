@@ -12,7 +12,7 @@ driven by accumulated simulation time.
 import numpy as np
 
 from qarm_kinematics import forward_kinematics, inverse_kinematics
-from trajectory import cubic_trajectory
+from trajectory import quintic_trajectory
 
 
 # State IDs (ints so Simulink can log them cleanly)
@@ -184,7 +184,7 @@ class StepController:
             self._last_ee = self._p1.copy()
             self._last_gripper = float(gripper)
             return True
-        p = cubic_trajectory(self._p0, self._p1, self._traj_T, elapsed)
+        p = quintic_trajectory(self._p0, self._p1, self._traj_T, elapsed)
         self._last_ee = p
         self._last_gripper = float(gripper)
         return False
