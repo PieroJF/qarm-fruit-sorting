@@ -21,6 +21,12 @@ MAX_ARM_PIXELS_FRAC = 0.50  # reject masks that cover > 50% of frame
 DEFAULT_WIDTH = 1280
 DEFAULT_HEIGHT = 720
 
+# Column band where the QArm base mounts — an "arm" component's centroid
+# must fall inside this band. Rejects background motion (people, doors)
+# that also touches the top edge of the frame but sits off to one side.
+# Tuned for the 2026-04-20 UGreen setup (arm front-center, 1280 wide).
+ARM_COL_BAND = (380, 820)
+
 
 def capture(width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT, warmup=10):
     """Open UGreen, grab one valid frame, release. Returns BGR ndarray.
@@ -61,14 +67,31 @@ def load_baseline(path):
     return img
 
 
-def arm_mask(frame, baseline, thresh=DIFF_THRESH):
+def arm_mask(frame, baseline, thresh=DIFF_THRESH, col_band=ARM_COL_BAND):
     """Binary mask where |frame - baseline| exceeds `thresh`. Reduced to
     grayscale by averaging the 3 BGR channels so lighting shifts affect
-    all channels equally (the threshold then absorbs small global shifts)."""
+    all channels equally (the threshold then absorbs small global shifts).
+
+    When `col_band=(lo, hi)` is provided, columns outside [lo, hi] are
+    zeroed BEFORE morphological cleanup. This prevents background motion
+    (people behind the bench, doors) from merging with the arm silhouette
+    via the MORPH_CLOSE operation. Pass `col_band=None` to disable.
+    """
     if frame.shape != baseline.shape:
         raise ValueError(f"shape mismatch: {frame.shape} vs {baseline.shape}")
     diff = cv2.absdiff(frame, baseline).mean(axis=2)
     mask = (diff > thresh).astype(np.uint8) * 255
+    if col_band is not None:
+        lo, hi = col_band
+        w = mask.shape[1]
+        # Only apply if the frame is wide enough for the band to make sense.
+        # Synthetic 640-wide test frames get skipped; the real 1280-wide
+        # UGreen frames get the background-rejection benefit.
+        if w >= 1000:
+            if lo > 0:
+                mask[:, :min(lo, w)] = 0
+            if hi < w:
+                mask[:, max(hi, 0):] = 0
     # Morphological cleanup — small kernel to keep thin arm features
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
@@ -77,7 +100,8 @@ def arm_mask(frame, baseline, thresh=DIFF_THRESH):
 
 
 def tcp_from_diff(frame, baseline, thresh=DIFF_THRESH,
-                   min_pixels=MIN_ARM_PIXELS):
+                   min_pixels=MIN_ARM_PIXELS,
+                   col_band=ARM_COL_BAND):
     """Locate the gripper TCP as the bottom-most point of the connected
     component reaching from the top of the frame. Returns (col, row) in
     pixel space, or None if no plausible arm silhouette is present.
@@ -91,7 +115,7 @@ def tcp_from_diff(frame, baseline, thresh=DIFF_THRESH,
        pick the largest by area.
     4. Return the bottom-center pixel of that component's bounding box.
     """
-    mask = arm_mask(frame, baseline, thresh=thresh)
+    mask = arm_mask(frame, baseline, thresh=thresh, col_band=col_band)
     mask_pixels = int((mask > 0).sum())
     if mask_pixels < min_pixels:
         return None
