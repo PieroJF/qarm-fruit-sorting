@@ -93,10 +93,13 @@ In `python/sorting_controller.py`, inside `FruitSortingController`, add (place j
         """
         self._start_grip_interp(target, duration=duration)
         # Hold current joints while ramping so only the gripper moves.
+        # Note: we call qarm.set_joints_and_gripper directly, NOT
+        # _execute_position — the latter treats its first arg as an xyz
+        # target and runs IK on it, which would reinterpret `joints`.
         joints = self._joints_snapshot()
         while not self._grip_interp_done():
             g = self._update_grip_interp()
-            self._execute_position(joints, g)
+            self.qarm.set_joints_and_gripper(joints, g)
             time.sleep(0.01)
         # Settle for a few frames, then read back actual.
         for _ in range(3):
