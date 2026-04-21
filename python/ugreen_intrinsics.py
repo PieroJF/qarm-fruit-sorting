@@ -56,13 +56,49 @@ def collect_frames(n=20, out_dir=CAPTURE_DIR):
     print("  GREEN overlay + corners = detected; press SPACE to save.")
     print("  RED message = no pattern found; reposition and try again.")
     print("  Q or ESC = quit early.")
+    print(f"[debug] opening UGreen idx={UGREEN_IDX} MSMF ...", flush=True)
 
     cap = cv2.VideoCapture(UGREEN_IDX, cv2.CAP_MSMF)
     if not cap.isOpened():
         raise RuntimeError(f"UGreen did not open (idx={UGREEN_IDX} MSMF)")
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-    cv2.namedWindow(WINDOW, cv2.WINDOW_AUTOSIZE)
+    # MSMF on Windows needs explicit media-type negotiation; without it
+    # grabFrame returns MF_E_INVALIDMEDIATYPE (-1072875772). Force MJPG
+    # FOURCC (more reliable than default YUYV at 720p), then set the
+    # resolution with small sleeps between so MSMF has time to commit
+    # each reconfigure.
+    print("[debug] negotiating MJPG 1280x720 ...", flush=True)
+    try:
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+        time.sleep(0.3)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        time.sleep(0.3)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        time.sleep(0.3)
+    except Exception as ex:
+        print(f"[debug] set() failed: {ex} — trying default res", flush=True)
+    print("[debug] camera negotiated, grabbing warmup frame ...", flush=True)
+    for _ in range(5):
+        ok, test = cap.read()
+        if ok and test is not None and test.size > 0:
+            print(f"[debug] warmup frame shape={test.shape} "
+                  f"mean={test.mean():.0f}", flush=True)
+            break
+    else:
+        print("[debug] WARNING: no valid warmup frame", flush=True)
+    print("[debug] creating preview window ...", flush=True)
+    try:
+        cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(WINDOW, 1280, 720)
+    except Exception as ex:
+        print(f"[debug] namedWindow failed: {ex}", flush=True)
+        raise
+    # Best-effort topmost — some OpenCV builds don't support this on Win.
+    try:
+        cv2.setWindowProperty(WINDOW, cv2.WND_PROP_TOPMOST, 1)
+    except Exception as ex:
+        print(f"[debug] topmost hint failed (non-fatal): {ex}", flush=True)
+    print("[debug] entering loop — if you don't see the window, "
+          "check behind the terminal (alt+tab on Windows).", flush=True)
 
     i = 0
     try:
