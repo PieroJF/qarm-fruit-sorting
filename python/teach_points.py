@@ -9,6 +9,9 @@ Focus that window to drive the arm (key codes via cv2.waitKeyEx):
   r / f   : +Z / -Z
   q / e   : wrist - / +
   SPACE   : toggle gripper
+  j       : toggle JOINT mode (per-joint jog — overrides q/e/r/f mapping)
+              in JOINT mode:  q/a J0   w/s J1   e/d J2   r/f J3
+              (rot_step applies; SPACE/+/-/h/p/n/l/x/m/g/1-9 still work)
   + / -   : double / halve jog step
   h       : slow home (5 s)
   p       : print current pose to terminal
@@ -57,8 +60,8 @@ LOG_DIR = os.path.abspath(
 from trace_logger import TraceLogger
 
 
-DEFAULT_LIN_STEP = 0.005          # 5 mm
-DEFAULT_ROT_STEP = np.deg2rad(5)  # 5 deg
+DEFAULT_LIN_STEP = 0.005            # 5 mm
+DEFAULT_ROT_STEP = np.deg2rad(1.5)  # 1.5 deg (wrist in Cart mode + all joints in Joint mode)
 INTERP_HZ = 100.0
 
 # Gripper safety: never fully close or fully open the gripper.
@@ -67,7 +70,7 @@ INTERP_HZ = 100.0
 #       there during the rest of the interpolation  -> open overload (-1289)
 # Use safer clamps on both ends.
 GRIP_CLOSE_CMD = 0.9
-GRIP_OPEN_CMD  = 0.15
+GRIP_OPEN_CMD  = 0.2
 # If the end-effector is below this Z (m), warn before closing.
 Z_LOW_WARN = 0.01
 WINDOW_NAME = "QArm Teach Pendant — focus here to jog"
@@ -493,6 +496,7 @@ def main():
         rot_step = DEFAULT_ROT_STEP
         log_line = "ready"
         log_expiry = time.time() + 3.0
+        joint_mode = False
 
         cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
 
@@ -638,6 +642,11 @@ def main():
             disp = grab_frame()
             if time.time() > log_expiry:
                 log_line = ""
+            if joint_mode:
+                # Persistent banner overrides log_line while in joint mode
+                log_line = ("JOINT mode  q/a J0  w/s J1  e/d J2  "
+                            "r/f J3   (j: back to Cart)")
+                log_expiry = time.time() + 1.0
             render_overlay(disp, phi_cmd, xyz, gamma, grip_cmd,
                            lin_step, rot_step, len(points), log_line,
                            recording=False,
@@ -656,6 +665,51 @@ def main():
             if key == 27:  # ESC
                 save_points(points)
                 return
+
+            # --- Joint-mode toggle + joint-mode key interception --------
+            # Works in either mode. 'j' flips Cartesian <-> Joint mode.
+            if key < 256 and chr(key).lower() == "j":
+                joint_mode = not joint_mode
+                log_line = ("JOINT mode (q/a J0  w/s J1  e/d J2  r/f J3)"
+                            if joint_mode else "Cartesian mode")
+                log_expiry = time.time() + 3.0
+                continue
+
+            # In joint mode, q/a, w/s, e/d, r/f act on individual joints
+            # instead of going through IK. Other keys (SPACE, h, p, n, +/-,
+            # 1-9, l, g, m, x) pass through to the normal handlers below.
+            if joint_mode and key < 256:
+                c_jm = chr(key).lower()
+                joint_idx = None
+                delta = 0.0
+                if c_jm == "q":   joint_idx, delta = 0, -rot_step
+                elif c_jm == "a": joint_idx, delta = 0, +rot_step
+                elif c_jm == "w": joint_idx, delta = 1, -rot_step
+                elif c_jm == "s": joint_idx, delta = 1, +rot_step
+                elif c_jm == "e": joint_idx, delta = 2, -rot_step
+                elif c_jm == "d": joint_idx, delta = 2, +rot_step
+                elif c_jm == "r": joint_idx, delta = 3, -rot_step
+                elif c_jm == "f": joint_idx, delta = 3, +rot_step
+
+                if joint_idx is not None:
+                    phi_new = phi_cmd.copy()
+                    target = phi_cmd[joint_idx] + delta
+                    lo, hi = JOINT_LIMITS[joint_idx]
+                    target_clipped = float(np.clip(target, lo, hi))
+                    if abs(target - target_clipped) > 1e-9:
+                        log_line = (f"J{joint_idx} at limit "
+                                    f"({np.degrees(target_clipped):+.1f} deg)")
+                        log_expiry = time.time() + 2.0
+                    phi_new[joint_idx] = target_clipped
+                    trace.log("JOINT_JOG", idx=joint_idx,
+                              phi_from=phi_cmd, phi_to=phi_new)
+                    interp_move(q, phi_cmd, phi_new, grip_cmd, grip_cmd,
+                                seconds=0.3, logger=trace, tag="JOINT_JOG",
+                                display_cb=refresh_display)
+                    phi_cmd = phi_new
+                    xyz, gamma = pose_from_joints(phi_cmd)
+                    continue
+                # Not a joint key — fall through so SPACE/h/p/n/etc work
 
             new_xyz = xyz.copy()
             new_gamma = gamma
@@ -838,6 +892,52 @@ def main():
                                 log_line = "modify cancelled"
                                 log_expiry = time.time() + 2.0
                                 break
+
+                            # Joint-mode toggle + interception inside modify
+                            if mk < 256 and chr(mk).lower() == "j":
+                                joint_mode = not joint_mode
+                                log_line = (
+                                    "JOINT mode (q/a J0 w/s J1 e/d J2 r/f J3)"
+                                    if joint_mode else "Cartesian mode")
+                                log_expiry = time.time() + 3.0
+                                continue
+
+                            if joint_mode and mk < 256:
+                                c_jm = chr(mk).lower()
+                                j_idx = None
+                                j_delta = 0.0
+                                if c_jm == "q":   j_idx, j_delta = 0, -rot_step
+                                elif c_jm == "a": j_idx, j_delta = 0, +rot_step
+                                elif c_jm == "w": j_idx, j_delta = 1, -rot_step
+                                elif c_jm == "s": j_idx, j_delta = 1, +rot_step
+                                elif c_jm == "e": j_idx, j_delta = 2, -rot_step
+                                elif c_jm == "d": j_idx, j_delta = 2, +rot_step
+                                elif c_jm == "r": j_idx, j_delta = 3, -rot_step
+                                elif c_jm == "f": j_idx, j_delta = 3, +rot_step
+                                if j_idx is not None:
+                                    phi_new = phi_cmd.copy()
+                                    target = phi_cmd[j_idx] + j_delta
+                                    lo, hi = JOINT_LIMITS[j_idx]
+                                    tc = float(np.clip(target, lo, hi))
+                                    if abs(target - tc) > 1e-9:
+                                        log_line = (f"J{j_idx} at limit "
+                                                    f"({np.degrees(tc):+.1f} deg)")
+                                        log_expiry = time.time() + 2.0
+                                    phi_new[j_idx] = tc
+                                    trace.log("JOINT_JOG_MODIFY",
+                                              idx=j_idx,
+                                              phi_from=phi_cmd, phi_to=phi_new)
+                                    interp_move(
+                                        q, phi_cmd, phi_new,
+                                        grip_cmd, grip_cmd,
+                                        seconds=0.3, logger=trace,
+                                        tag="JOINT_JOG",
+                                        display_cb=refresh_display)
+                                    phi_cmd = phi_new
+                                    xyz, gamma = pose_from_joints(phi_cmd)
+                                    continue
+                                # not a joint key — fall through to Cart handlers
+
                             # Jog controls work inside modify mode
                             m_xyz = xyz.copy()
                             m_gamma = gamma
