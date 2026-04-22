@@ -27,7 +27,7 @@ Net result: ~20 minutes of session setup, fruit positions still hardcoded, and t
 ### 1.2 Goals of this redesign
 
 - **Sub-1-minute session calibration**, using only equipment the team already owns (printed 7×5 30 mm chessboard, D415).
-- **Fully automatic fruit detection** — no hardcoded positions. One overhead photo produces a list of `(fruit_type, base_frame_XYZ)` for the picker to consume.
+- **Fully automatic fruit detection** — no hardcoded positions, no hardcoded counts. One overhead photo produces a list of `(fruit_type, base_frame_XYZ)` for the picker to consume. The pipeline must adapt to whatever is on the table in the moment: 0, 1, or many fruits of each type, in any mix. The operator can add or remove fruits between picks (or even between sessions) without touching the config.
 - **Two-mode operator UI** — the detection result is shown in an annotated OpenCV window with two input paths:
   - **Mouse click** → pick that single fruit (supervised, one cycle per click).
   - **Keyboard `b` / `t` / `s`** → pick every banana / tomato / strawberry currently visible, one after another, re-capturing between each pick (supervised batch by category).
@@ -323,7 +323,7 @@ def run_picker_loop(driver: QArmDriver, camera: QArmCamera,
          if pick_succeeded: retries_per_target.pop(key, None)
          else: retries_per_target[key] = retries_per_target.get(key, 0) + 1
      ```
-   - Hard cap: total picks in one batch ≤ 20 (defensive upper bound for a table that never has more than 14 fruits).
+   - Hard cap: total picks in one batch ≤ 20 (runaway safety: prevents a detector pathology from looping forever on phantom blobs; does NOT imply a scene-count limit — operators can run the batch again if they legitimately had > 20 fruits of one type, which is unlikely at coursework scale but not forbidden).
    - HUD overlay during batch: `"auto-picking {type}: {n_done}/{n_total_seen}"`.
 7. Errors during any pick (IK fail, gripper fail, controller exception): print trace, show red banner "pick failed: {reason}" for 3 s, re-capture, loop. Never crash the viewer.
 
@@ -344,7 +344,7 @@ def run_picker_loop(driver: QArmDriver, camera: QArmCamera,
 - Hardcoded demo fruit queue: **deleted**.
 - Preserve `--dry-run` flag (no arm movement — picker just prints clicks + would-be commands to stdout, useful for offline UI demos). `--pick-only` is removed as it no longer has meaning under click-to-pick.
 
-**4.1.1 Interaction contract**: One input (click or category key) = one or more pick cycles, always synchronous. Re-capture happens between every pick — both single and batch — so the detector always acts on a fresh view. Why: (a) every pick is supervised at the category level or finer, so a bad detection never turns into an unrecoverable multi-pick cascade (operator can press ESC to cut a batch short); (b) re-capturing between picks eliminates the "fruit got bumped" failure mode that would otherwise require explicit re-capturing on a timer; (c) the category-batch and single-click paths share one underlying `pick_single` implementation — no duplicated motion logic.
+**4.1.1 Interaction contract**: One input (click or category key) = one or more pick cycles, always synchronous. Re-capture happens between every pick — both single and batch — so the detector always acts on a fresh view. Why: (a) every pick is supervised at the category level or finer, so a bad detection never turns into an unrecoverable multi-pick cascade (operator can press ESC to cut a batch short); (b) re-capturing between picks eliminates the "fruit got bumped" failure mode that would otherwise require explicit re-capturing on a timer; (c) the category-batch and single-click paths share one underlying `pick_single` implementation — no duplicated motion logic; (d) **no fixed count assumption** — `b`/`t`/`s` processes however many of that type are visible *right now*, so the operator can put 2 bananas on the table, press `b`, add 3 more bananas while the arm is working (the mid-batch re-capture will pick them up), then press `b` again to clear the new ones.
 
 ### 4.2 `python/preflight.py`
 
@@ -449,15 +449,19 @@ Add section:
 
 ### 6.2 Integration test (lab, D4)
 
-Acceptance criteria for "pipeline works":
-1. `calibrate_chessboard.py` completes with RMS < 2 px.
-2. **Click path**: `main_final.py` opens the picker. Operator click-picks 2 fruits of each type (6 total). Each pick: IK reaches target within 10 mm, gripper closes on fruit, fruit delivered to the correct basket.
-3. **Category path**: Fresh placement of 14 fruits (6 strawberry + 3 banana + 5 tomato). Operator presses `b` → arm autonomously picks all 3 bananas → stops. Presses `t` → all 5 tomatoes. Presses `s` → all 6 strawberries. ≤ 2 total pick retries across the whole 14-fruit run.
-4. Chessboard residual stays < 3 mm throughout (printed in HUD).
-5. Re-capture between picks successfully removes the just-picked fruit from the detection list.
-6. ESC during a category batch cleanly halts after the in-progress pick finishes.
+Acceptance criteria for "pipeline works" — deliberately exercises **variable fruit counts** to prove flexibility (no hardcoded 14-fruit assumption):
 
-If (2) or (3) fails on a specific fruit class, return to `hsv_tuner.py` and re-tune that class, then retry.
+1. `calibrate_chessboard.py` completes with RMS < 2 px.
+2. **Empty-table sanity**: With 0 fruits on the table, press `b`/`t`/`s` → each shows the "no {type} visible" toast and returns to idle without moving the arm. Click anywhere → "no fruit here" toast.
+3. **Click path, sparse scene**: Place 1 banana + 1 tomato + 1 strawberry. Click each in any order → all 3 delivered to correct baskets. IK within 10 mm, gripper grabs each successfully.
+4. **Category path, mixed counts**: Place 2 bananas + 4 tomatoes + 3 strawberries (9 total, non-default counts). Press `b` → both bananas picked → stops. Press `t` → all 4 tomatoes. Press `s` → all 3 strawberries. ≤ 2 pick retries total.
+5. **Add-during-session**: After scenario (4), place 2 more strawberries on the table. Press `s` → both newly-added strawberries picked. (Proves re-capture sees new fruits.)
+6. **Full-scene scale**: Place the coursework full count (6 strawberry + 3 banana + 5 tomato = 14). Press `b`, `t`, `s` in any order → all 14 sorted. ≤ 3 pick retries total.
+7. Chessboard residual stays < 3 mm throughout (printed in HUD) for all scenarios.
+8. Re-capture between picks successfully removes the just-picked fruit from the detection list.
+9. ESC during a category batch cleanly halts after the in-progress pick finishes.
+
+If any scenario fails on a specific fruit class, return to `hsv_tuner.py` and re-tune that class, then retry.
 
 ---
 
