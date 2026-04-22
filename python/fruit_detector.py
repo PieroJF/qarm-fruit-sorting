@@ -83,3 +83,39 @@ def hsv_mask(bgr: np.ndarray, ranges: dict) -> np.ndarray:
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, _OPEN_KERNEL)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, _CLOSE_KERNEL)
     return mask
+
+
+# ------------------------------------------------------------------------
+# Per-class detection. Each _detect_* returns a list of raw hits:
+#   [((cx, cy), area_px, (bx, by, bw, bh), confidence), ...]
+# The top-level detect_fruits() wraps these into Detection objects with
+# base-frame coordinates.
+# ------------------------------------------------------------------------
+_BANANA_MIN_AREA = 800
+_BANANA_MAX_AREA = 30000
+_BANANA_MIN_ASPECT = 1.8
+
+
+def _detect_banana_contours(bgr: np.ndarray) -> list:
+    """Find banana blobs (yellow + elongated). Pure 2D; no depth, no base
+    coords. Each hit: ((cx, cy), area_px, (x, y, w, h), confidence)."""
+    mask = hsv_mask(bgr, HSV_RANGES["banana"])
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
+                                    cv2.CHAIN_APPROX_SIMPLE)
+    hits = []
+    for c in contours:
+        area = float(cv2.contourArea(c))
+        if area < _BANANA_MIN_AREA or area > _BANANA_MAX_AREA:
+            continue
+        (cx, cy), (w_r, h_r), _ = cv2.minAreaRect(c)
+        if w_r < 1 or h_r < 1:
+            continue
+        aspect = max(w_r, h_r) / min(w_r, h_r)
+        if aspect < _BANANA_MIN_ASPECT:
+            continue
+        x, y, w_b, h_b = cv2.boundingRect(c)
+        aspect_score = min(1.0, (aspect - _BANANA_MIN_ASPECT) / 2.0)
+        hits.append(((int(cx), int(cy)), int(area),
+                     (int(x), int(y), int(w_b), int(h_b)),
+                     float(max(0.3, aspect_score))))
+    return hits

@@ -108,12 +108,59 @@ def test_hsv_mask_excludes_out_of_range():
     assert (mask > 0).mean() < 0.01
 
 
+# ========================================================================
+# B3. banana detection
+# ========================================================================
+def _draw_rect_bgr(size, center, w, h, color, rotation_deg=0):
+    """Render a filled rotated rect on a black size=(H,W) canvas. Returns BGR."""
+    import cv2
+    H, W = size
+    img = np.zeros((H, W, 3), dtype=np.uint8)
+    box = cv2.boxPoints(((center[0], center[1]), (w, h), rotation_deg))
+    box = np.int32(box)
+    cv2.fillPoly(img, [box], color)
+    return img
+
+
+def test_banana_contours_finds_one():
+    from fruit_detector import _detect_banana_contours
+    img = _draw_rect_bgr((480, 640), (320, 240), 180, 60,
+                          (0, 220, 220))
+    dets = _detect_banana_contours(img)
+    assert len(dets) == 1, f"expected 1 banana, got {len(dets)}"
+    (cx, cy), area, bbox, conf = dets[0]
+    assert abs(cx - 320) < 10, f"cx={cx}"
+    assert abs(cy - 240) < 10, f"cy={cy}"
+    assert area > 8000, f"area={area}"
+    assert conf > 0.3, f"confidence={conf}"
+
+
+def test_banana_rejects_round_shape():
+    import cv2
+    from fruit_detector import _detect_banana_contours
+    img = np.zeros((480, 640, 3), dtype=np.uint8)
+    cv2.circle(img, (320, 240), 60, (0, 220, 220), -1)
+    dets = _detect_banana_contours(img)
+    assert len(dets) == 0, f"expected 0, got {len(dets)}"
+
+
+def test_banana_rejects_tiny_blob():
+    from fruit_detector import _detect_banana_contours
+    img = _draw_rect_bgr((480, 640), (320, 240), 40, 10,
+                          (0, 220, 220))
+    dets = _detect_banana_contours(img)
+    assert len(dets) == 0
+
+
 if __name__ == "__main__":
     _section("B1 Detection fields", test_detection_fields)
     _section("B1 Detection to_dict", test_detection_to_dict)
     _section("B2 hsv_mask single (yellow)", test_hsv_mask_single_range_yellow)
     _section("B2 hsv_mask wrap (red)", test_hsv_mask_red_wrap_around)
     _section("B2 hsv_mask excludes blue", test_hsv_mask_excludes_out_of_range)
+    _section("B3 banana finds one", test_banana_contours_finds_one)
+    _section("B3 banana rejects round", test_banana_rejects_round_shape)
+    _section("B3 banana rejects tiny", test_banana_rejects_tiny_blob)
     fails = sum(1 for _, ok, _ in _RESULTS if not ok)
     print(f"\n{len(_RESULTS)} test(s), {fails} failed")
     sys.exit(fails)
