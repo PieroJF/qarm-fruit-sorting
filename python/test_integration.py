@@ -30,7 +30,6 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-import cv2
 from qarm_kinematics import forward_kinematics, inverse_kinematics
 from sorting_controller import FruitSortingController, State, GRIP_OPEN
 
@@ -60,31 +59,6 @@ class MockQArm:
         self._joints = phi.copy()
         self._grip = float(g)
         self.cmd_log.append((phi.copy(), float(g)))
-
-
-def synthetic_scene():
-    """Return a (bgr, depth) pair with 3 red/yellow fruits in known places.
-
-    All depths inside the plausible band [200, 700] mm so detection_depth_mm
-    returns valid values. Pixels are chosen to back-project to reachable
-    base-frame positions given identity T_cam_to_base.
-    """
-    bgr = np.zeros((720, 1280, 3), dtype=np.uint8)
-    depth = np.full((720, 1280), 800, dtype=np.uint16)  # background > band
-
-    # Strawberry (elongated red): circularity ~0.5
-    cv2.ellipse(bgr, (400, 400), (40, 70), 0, 0, 360, (0, 0, 230), -1)
-    cv2.ellipse(depth, (400, 400), (40, 70), 0, 0, 360, 430, -1)
-
-    # Tomato (round red, high saturation): circularity ~0.9
-    cv2.circle(bgr, (800, 400), 45, (20, 20, 240), -1)
-    cv2.circle(depth, (800, 400), 45, 450, -1)
-
-    # Banana (yellow): falls in HSV banana range
-    cv2.ellipse(bgr, (640, 250), (80, 25), 0, 0, 360, (0, 230, 230), -1)
-    cv2.ellipse(depth, (640, 250), (80, 25), 0, 0, 360, 400, -1)
-
-    return bgr, depth
 
 
 # ------------------------------------------------------------------------

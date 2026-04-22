@@ -211,7 +211,7 @@ def _detect_strawberry_contours(bgr: np.ndarray) -> list:
             continue
         x, y, w_b, h_b = cv2.boundingRect(c)
         calyx_ratio = _has_green_above(bgr, (x, y, w_b, h_b))
-        if calyx_ratio < _STRAWBERRY_MIN_CALYX:
+        if calyx_ratio <= _STRAWBERRY_MIN_CALYX:
             continue
         taper = _taper_score(c, (x, y, w_b, h_b))
         # Accept near-round (1.0) to strongly tapered (~3.0). Below 0.9
