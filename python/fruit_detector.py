@@ -116,10 +116,15 @@ def _detect_banana_contours(bgr: np.ndarray) -> list:
         if aspect < _BANANA_MIN_ASPECT:
             continue
         x, y, w_b, h_b = cv2.boundingRect(c)
-        aspect_score = min(1.0, (aspect - _BANANA_MIN_ASPECT) / 2.0)
+        # Score in [0, 1]: 0.0 at aspect = min (1.8), 1.0 at aspect >= 2.8.
+        # No floor — let CONFIDENCE_MIN be the authoritative gate so the
+        # floor-above-gate silent-drop trap from the 2026-04-22 review
+        # cannot recur.
+        aspect_score = min(1.0, max(0.0,
+            (aspect - _BANANA_MIN_ASPECT) / 1.0))
         hits.append(((int(cx), int(cy)), int(area),
                      (int(x), int(y), int(w_b), int(h_b)),
-                     float(max(0.3, aspect_score))))
+                     float(aspect_score)))
     return hits
 
 
@@ -237,10 +242,11 @@ def _detect_strawberry_contours(bgr: np.ndarray) -> list:
         cx = int(M["m10"] / M["m00"])
         cy = int(M["m01"] / M["m00"])
         # Confidence driven mostly by calyx; taper gate is binary.
+        # No floor — CONFIDENCE_MIN is the authoritative gate.
         conf = float(min(1.0, calyx_ratio * 3.0))
         hits.append(((cx, cy), int(area),
                      (int(x), int(y), int(w_b), int(h_b)),
-                     max(0.3, conf)))
+                     conf))
     return hits
 
 
