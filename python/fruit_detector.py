@@ -293,3 +293,45 @@ def pixel_to_base_frame(center_px: tuple, fruit_top_z_mm: float,
     y = origin[1] + chess_y_mm / 1000.0
     z_base = origin[2] + z / 1000.0
     return np.array([x, y, z_base], dtype=float)
+
+
+CONFIDENCE_MIN = 0.35
+
+
+def detect_fruits(color_bgr: np.ndarray, depth_mm: np.ndarray,
+                   session_cal) -> list[Detection]:
+    """
+    Top-level detector. Returns every fruit found with a valid depth
+    sample and a confidence >= CONFIDENCE_MIN.
+
+    Processing order: banana -> tomato -> strawberry. This order does
+    not matter for correctness — each detector runs independently on
+    its own HSV mask — but keeps the returned list deterministic.
+    """
+    results: list[Detection] = []
+    per_class = [
+        ("banana", _detect_banana_contours),
+        ("tomato", _detect_tomato_contours),
+        ("strawberry", _detect_strawberry_contours),
+    ]
+    for fruit_type, fn in per_class:
+        for (cx, cy), area, bbox, conf in fn(color_bgr):
+            if conf < CONFIDENCE_MIN:
+                continue
+            top_z_mm = sample_depth_at_pixel(depth_mm, (cx, cy))
+            if top_z_mm is None:
+                continue
+            try:
+                xyz_base = pixel_to_base_frame(
+                    (cx, cy), top_z_mm, session_cal)
+            except ValueError:
+                continue
+            results.append(Detection(
+                fruit_type=fruit_type,
+                center_px=(int(cx), int(cy)),
+                center_base_m=xyz_base,
+                confidence=float(conf),
+                area_px=int(area),
+                bbox=tuple(int(v) for v in bbox),
+            ))
+    return results

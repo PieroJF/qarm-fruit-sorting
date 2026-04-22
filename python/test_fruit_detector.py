@@ -348,6 +348,68 @@ def test_pixel_to_base_z_equals_origin_plus_fruit_top():
     assert abs(xyz[2] - (0.02 + 0.045)) < 1e-6, xyz
 
 
+# ========================================================================
+# B8. top-level detect_fruits
+# ========================================================================
+def _compose_test_scene():
+    """Render a scene with one banana, one tomato, and one strawberry at
+    known pixel locations. Return (bgr, depth, expected_pixels_by_type)."""
+    import cv2
+    bgr = np.zeros((720, 1280, 3), dtype=np.uint8)
+    depth = np.zeros((720, 1280), dtype=np.uint16)
+    # Banana at (300, 360), yellow, elongated (120x40 gives aspect 3.0).
+    cv2.rectangle(bgr, (240, 340), (360, 380), (0, 220, 220), -1)
+    depth[330:390, 230:370] = 500
+    # Tomato at (640, 360), round red.
+    cv2.circle(bgr, (640, 360), 40, (0, 0, 220), -1)
+    depth[315:405, 595:685] = 510
+    # Strawberry at (960, 360), tapered red + calyx above.
+    pts = np.array([[930, 320], [990, 320], [975, 400], [945, 400]],
+                    dtype=np.int32)
+    cv2.fillPoly(bgr, [pts], (0, 0, 220))
+    cv2.rectangle(bgr, (930, 300), (990, 315), (0, 200, 0), -1)
+    depth[310:410, 920:1000] = 505
+    return bgr, depth, {
+        "banana": (300, 360),
+        "tomato": (640, 360),
+        "strawberry": (960, 360),
+    }
+
+
+def test_detect_fruits_end_to_end():
+    from fruit_detector import detect_fruits
+    cal = _fake_session_cal(origin=(0.30, 0.10, 0.02), cam_h_m=0.60)
+    bgr, depth, expected = _compose_test_scene()
+    dets = detect_fruits(bgr, depth, cal)
+    types = [d.fruit_type for d in dets]
+    assert "banana" in types, f"no banana among {types}"
+    assert "tomato" in types, f"no tomato among {types}"
+    assert "strawberry" in types, f"no strawberry among {types}"
+    for d in dets:
+        assert d.center_base_m.shape == (3,)
+        assert np.isfinite(d.center_base_m).all()
+        assert 0.0 < d.confidence <= 1.0
+
+
+def test_detect_fruits_skips_invalid_depth():
+    """Fruit blobs with no valid depth (all-zero patch) must be dropped."""
+    from fruit_detector import detect_fruits
+    cal = _fake_session_cal(origin=(0.30, 0.10, 0.02), cam_h_m=0.60)
+    bgr, depth, _ = _compose_test_scene()
+    depth = np.zeros_like(depth)
+    dets = detect_fruits(bgr, depth, cal)
+    assert len(dets) == 0, f"expected 0 detections with null depth, got {len(dets)}"
+
+
+def test_detect_fruits_empty_scene():
+    from fruit_detector import detect_fruits
+    cal = _fake_session_cal(origin=(0.30, 0.10, 0.02), cam_h_m=0.60)
+    bgr = np.zeros((720, 1280, 3), dtype=np.uint8)
+    depth = np.full((720, 1280), 500, dtype=np.uint16)
+    dets = detect_fruits(bgr, depth, cal)
+    assert dets == []
+
+
 if __name__ == "__main__":
     _section("B1 Detection fields", test_detection_fields)
     _section("B1 Detection to_dict", test_detection_to_dict)
@@ -368,6 +430,9 @@ if __name__ == "__main__":
     _section("B7 px->base principal point", test_pixel_to_base_identity_at_principal_point)
     _section("B7 px->base parallax", test_pixel_to_base_parallax_shrinks_with_fruit_height)
     _section("B7 px->base z", test_pixel_to_base_z_equals_origin_plus_fruit_top)
+    _section("B8 detect end-to-end", test_detect_fruits_end_to_end)
+    _section("B8 detect skips null depth", test_detect_fruits_skips_invalid_depth)
+    _section("B8 detect empty scene", test_detect_fruits_empty_scene)
     fails = sum(1 for _, ok, _ in _RESULTS if not ok)
     print(f"\n{len(_RESULTS)} test(s), {fails} failed")
     sys.exit(fails)
