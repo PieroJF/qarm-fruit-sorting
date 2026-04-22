@@ -41,3 +41,35 @@ def solve_homography(image_pts: np.ndarray,
     err = np.linalg.norm(proj - world_pts, axis=1)
     rms_mm = float(np.sqrt(np.mean(err ** 2)))
     return H.astype(np.float64), rms_mm
+
+
+def camera_height_from_homography(H: np.ndarray,
+                                   fx: float, fy: float,
+                                   cx: float, cy: float) -> float:
+    """
+    Estimate camera height above the chess plane, in the same units as
+    H's world range (so: mm if H maps pixel->mm).
+
+    Derivation: for a nadir pinhole camera, the Jacobian of the pixel->world
+    map near the principal point has determinant (h/fx)*(h/fy), so
+        h = sqrt(|det J| * fx * fy).
+
+    Accurate to ~2% for a nadir camera; ~15% for tilts up to ~30 deg
+    (spec §4.3 enforces this). For larger tilts the value is only an
+    approximation; the caller should not trust it past 20% rel err.
+    """
+    p = np.array([cx, cy, 1.0])
+    w = H @ p
+    s = w[2]
+    if abs(s) < 1e-9:
+        raise ValueError("homography degenerate at principal point")
+
+    x = w[0] / s
+    y = w[1] / s
+    dxdu = (H[0, 0] - x * H[2, 0]) / s
+    dxdv = (H[0, 1] - x * H[2, 1]) / s
+    dydu = (H[1, 0] - y * H[2, 0]) / s
+    dydv = (H[1, 1] - y * H[2, 1]) / s
+    det_j = abs(dxdu * dydv - dxdv * dydu)
+    h_est = float(np.sqrt(det_j * fx * fy))
+    return h_est

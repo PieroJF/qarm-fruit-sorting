@@ -123,11 +123,51 @@ def test_homography_rejects_collinear_points():
         pass
 
 
+# ========================================================================
+# A3. camera height from homography
+# ========================================================================
+def test_camera_height_matches_synthetic_truth():
+    from homography_solver import (solve_homography,
+                                    camera_height_from_homography)
+    true_h_mm = 600.0
+    fx, fy, cx, cy = 912.0, 912.0, 640.0, 360.0
+    image, world = _make_synthetic_corners(
+        fx=fx, fy=fy, cx=cx, cy=cy, cam_height_mm=true_h_mm)
+    H, _ = solve_homography(image, world)
+    recovered = camera_height_from_homography(H, fx=fx, fy=fy, cx=cx, cy=cy)
+    rel_err = abs(recovered - true_h_mm) / true_h_mm
+    assert rel_err < 0.02, (
+        f"recovered h {recovered:.1f} vs truth {true_h_mm:.1f} "
+        f"(rel err {rel_err*100:.1f}%)")
+
+
+def test_camera_height_handles_tilted_camera_within_15pct():
+    """Approximate check: scale one axis by 0.94 (a rough stand-in for a
+    mild tilt) and confirm the recovered height is within 15% of truth."""
+    import cv2
+    fx, fy, cx, cy = 912.0, 912.0, 640.0, 360.0
+    true_h_mm = 600.0
+    image, world = _make_synthetic_corners(
+        fx=fx, fy=fy, cx=cx, cy=cy, cam_height_mm=true_h_mm)
+    image_tilted = image.copy()
+    image_tilted[:, 1] = (image_tilted[:, 1] - cy) * 0.94 + cy
+    from homography_solver import (solve_homography,
+                                    camera_height_from_homography)
+    H, _ = solve_homography(image_tilted, world)
+    recovered = camera_height_from_homography(H, fx=fx, fy=fy, cx=cx, cy=cy)
+    rel_err = abs(recovered - true_h_mm) / true_h_mm
+    assert rel_err < 0.15, (
+        f"under mild tilt, recovered {recovered:.1f} vs {true_h_mm:.1f} "
+        f"(rel err {rel_err*100:.1f}%)")
+
+
 if __name__ == "__main__":
     _section("A1 session_cal roundtrip", test_session_cal_roundtrip)
     _section("A1 session_cal missing file", test_session_cal_missing_file_raises)
     _section("A2 homography recovers identity", test_homography_recovers_identity_scale)
     _section("A2 homography rejects collinear", test_homography_rejects_collinear_points)
+    _section("A3 camera height nadir", test_camera_height_matches_synthetic_truth)
+    _section("A3 camera height tilted", test_camera_height_handles_tilted_camera_within_15pct)
     fails = sum(1 for _, ok, _ in _RESULTS if not ok)
     print(f"\n{len(_RESULTS)} test(s), {fails} failed")
     sys.exit(fails)
