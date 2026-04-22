@@ -181,6 +181,43 @@ def test_camera_height_at_docstring_boundary_30deg():
         f"{recovered:.1f} vs {true_h_mm:.1f} (rel err {rel_err*100:.1f}%)")
 
 
+# ========================================================================
+# A4. touch_probe
+# ========================================================================
+class _FakeDriver:
+    """Stands in for QArmDriver. Stores last-commanded joints and
+    returns them on read_all; ignores gripper commands."""
+    def __init__(self, joints):
+        self._j = np.asarray(joints, dtype=float)
+        self._g = 0.10
+    def read_all(self):
+        return self._j.copy(), self._g
+    def set_joints_and_gripper(self, j, g):
+        self._j = np.asarray(j, dtype=float)
+        self._g = float(g)
+
+
+def test_touch_probe_returns_tcp_from_fk():
+    """With the fake driver parked at a known pose, touch_probe.capture_tcp
+    should return the FK position of that pose (no movement, just a read)."""
+    from qarm_kinematics import forward_kinematics
+    from touch_probe import capture_tcp
+
+    joints = np.array([0.1, -0.2, 0.3, 0.0])
+    driver = _FakeDriver(joints)
+    expected_pos, _ = forward_kinematics(joints)
+    tcp = capture_tcp(driver)
+    assert np.allclose(tcp, expected_pos, atol=1e-9), (
+        f"tcp {tcp} vs expected {expected_pos}")
+
+
+def test_touch_probe_shape_is_3():
+    from touch_probe import capture_tcp
+    driver = _FakeDriver(np.array([0.0, 0.0, 0.0, 0.0]))
+    tcp = capture_tcp(driver)
+    assert tcp.shape == (3,), f"expected shape (3,) got {tcp.shape}"
+
+
 if __name__ == "__main__":
     _section("A1 session_cal roundtrip", test_session_cal_roundtrip)
     _section("A1 session_cal missing file", test_session_cal_missing_file_raises)
@@ -189,6 +226,8 @@ if __name__ == "__main__":
     _section("A3 camera height nadir", test_camera_height_matches_synthetic_truth)
     _section("A3 camera height tilted", test_camera_height_handles_tilted_camera_within_15pct)
     _section("A3 camera height 30deg boundary", test_camera_height_at_docstring_boundary_30deg)
+    _section("A4 touch_probe returns FK", test_touch_probe_returns_tcp_from_fk)
+    _section("A4 touch_probe shape", test_touch_probe_shape_is_3)
     fails = sum(1 for _, ok, _ in _RESULTS if not ok)
     print(f"\n{len(_RESULTS)} test(s), {fails} failed")
     sys.exit(fails)
