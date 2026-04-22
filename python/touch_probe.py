@@ -61,7 +61,7 @@ def jog_and_capture(driver, jog_step_rad: float = 0.02,
                 f"joints (rad): {joints[0]:+.3f} {joints[1]:+.3f} "
                 f"{joints[2]:+.3f} {joints[3]:+.3f}",
                 f"gripper:      {grip:.2f}",
-                "q/w/e/r = +j1/j2/j3/j4,  a/s/d/f = - ,  z/x = grip -/+",
+                "q/w/e/r = +j1/j2/j3/j4,  a/s/d/f = - ,  z = close, x = open",
                 "ENTER = confirm origin corner,  ESC = abort",
             ]
             for i, line in enumerate(lines):
