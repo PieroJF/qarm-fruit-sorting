@@ -171,3 +171,63 @@ def _detect_tomato_contours(bgr: np.ndarray) -> list:
         hits.append(((cx, cy), int(area),
                      (int(x), int(y), int(w_b), int(h_b)), conf))
     return hits
+
+
+_STRAWBERRY_MIN_AREA = 200
+_STRAWBERRY_MAX_AREA = 4000
+_STRAWBERRY_MIN_CALYX = 0.05     # same threshold as tomato's rejection band
+
+
+def _taper_score(contour, bbox) -> float:
+    """Return width_at_top_20% / width_at_bottom_80% of the contour.
+
+    Images use image-coord convention (y grows DOWN), so the "top" band
+    corresponds to the blob's upper edge (where the strawberry's calyx
+    attaches) and is the WIDER part. A taper > 1.0 means wider top,
+    narrower bottom (strawberry shape). ~1.0 means tomato. Our
+    _draw_strawberry_bgr test fixture produces taper ≈ 1.9."""
+    x, y, w, h = bbox
+    if h < 10:
+        return 1.0
+    top_band_y = y + int(h * 0.2)
+    bot_band_y = y + int(h * 0.8)
+    mask = np.zeros((y + h + 2, x + w + 2), dtype=np.uint8)
+    cv2.drawContours(mask, [contour], -1, 255, thickness=-1)
+    top_cols = np.where(mask[top_band_y] > 0)[0]
+    bot_cols = np.where(mask[bot_band_y] > 0)[0]
+    top_w = (top_cols.max() - top_cols.min()) if top_cols.size >= 2 else 1
+    bot_w = (bot_cols.max() - bot_cols.min()) if bot_cols.size >= 2 else 1
+    return float(top_w) / float(max(1, bot_w))
+
+
+def _detect_strawberry_contours(bgr: np.ndarray) -> list:
+    mask = hsv_mask(bgr, HSV_RANGES["strawberry"])
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
+                                    cv2.CHAIN_APPROX_SIMPLE)
+    hits = []
+    for c in contours:
+        area = float(cv2.contourArea(c))
+        if area < _STRAWBERRY_MIN_AREA or area > _STRAWBERRY_MAX_AREA:
+            continue
+        x, y, w_b, h_b = cv2.boundingRect(c)
+        calyx_ratio = _has_green_above(bgr, (x, y, w_b, h_b))
+        if calyx_ratio < _STRAWBERRY_MIN_CALYX:
+            continue
+        taper = _taper_score(c, (x, y, w_b, h_b))
+        # Accept near-round (1.0) to strongly tapered (~3.0). Below 0.9
+        # means narrower top (upside-down, unlikely in overhead view);
+        # above 3.5 means the contour is bizarrely thin at the bottom,
+        # probably a segmentation artifact.
+        if taper < 0.9 or taper > 3.5:
+            continue
+        M = cv2.moments(c)
+        if M["m00"] <= 0:
+            continue
+        cx = int(M["m10"] / M["m00"])
+        cy = int(M["m01"] / M["m00"])
+        # Confidence driven mostly by calyx; taper gate is binary.
+        conf = float(min(1.0, calyx_ratio * 3.0))
+        hits.append(((cx, cy), int(area),
+                     (int(x), int(y), int(w_b), int(h_b)),
+                     max(0.3, conf)))
+    return hits

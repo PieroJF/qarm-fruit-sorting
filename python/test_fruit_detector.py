@@ -195,6 +195,58 @@ def test_tomato_rejects_elongated_red():
     assert len(dets) == 0, "elongated red must not register as tomato"
 
 
+# ========================================================================
+# B5. strawberry detection
+# ========================================================================
+def _draw_strawberry_bgr(size, center, w, h_fruit, h_calyx=12):
+    """A triangle-ish red body (wide top, narrow bottom) with a green band
+    immediately above (the calyx). Good enough to exercise the taper score
+    and the green-calyx confirm."""
+    import cv2
+    H, W = size
+    img = np.zeros((H, W, 3), dtype=np.uint8)
+    cx, cy = center
+    top_w = w
+    bot_w = w // 3
+    pts = np.array([
+        [cx - top_w // 2, cy - h_fruit // 2],
+        [cx + top_w // 2, cy - h_fruit // 2],
+        [cx + bot_w // 2, cy + h_fruit // 2],
+        [cx - bot_w // 2, cy + h_fruit // 2],
+    ], dtype=np.int32)
+    cv2.fillPoly(img, [pts], (0, 0, 220))
+    gy_lo = cy - h_fruit // 2 - 20
+    gy_hi = cy - h_fruit // 2 - 6
+    cv2.rectangle(img, (cx - top_w // 2, gy_lo),
+                   (cx + top_w // 2, gy_hi), (0, 200, 0), -1)
+    return img
+
+
+def test_strawberry_finds_tapered_red_with_calyx():
+    from fruit_detector import _detect_strawberry_contours
+    img = _draw_strawberry_bgr((480, 640), (320, 240), 60, 70)
+    dets = _detect_strawberry_contours(img)
+    assert len(dets) == 1, f"expected 1 strawberry, got {len(dets)}"
+    (cx, cy), area, bbox, conf = dets[0]
+    assert abs(cx - 320) < 10
+    assert conf > 0.3
+
+
+def test_strawberry_rejects_red_no_calyx():
+    """Same tapered shape but no green above → not a strawberry."""
+    import cv2
+    from fruit_detector import _detect_strawberry_contours
+    img = _draw_strawberry_bgr((480, 640), (320, 240), 60, 70)
+    # Blank out the calyx band.
+    img[180:240, 280:360] = 0
+    cv2.fillPoly(img, [np.array([
+        [290, 205], [350, 205], [340, 275], [300, 275]], dtype=np.int32)],
+        (0, 0, 220))
+    dets = _detect_strawberry_contours(img)
+    assert len(dets) == 0, (
+        f"strawberry must require green calyx; got {len(dets)}")
+
+
 if __name__ == "__main__":
     _section("B1 Detection fields", test_detection_fields)
     _section("B1 Detection to_dict", test_detection_to_dict)
@@ -207,6 +259,8 @@ if __name__ == "__main__":
     _section("B4 tomato finds round red", test_tomato_finds_round_red)
     _section("B4 tomato rejects green-above", test_tomato_rejects_red_with_green_above)
     _section("B4 tomato rejects elongated", test_tomato_rejects_elongated_red)
+    _section("B5 strawberry tapered with calyx", test_strawberry_finds_tapered_red_with_calyx)
+    _section("B5 strawberry rejects no-calyx", test_strawberry_rejects_red_no_calyx)
     fails = sum(1 for _, ok, _ in _RESULTS if not ok)
     print(f"\n{len(_RESULTS)} test(s), {fails} failed")
     sys.exit(fails)
