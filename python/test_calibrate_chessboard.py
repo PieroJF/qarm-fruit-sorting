@@ -79,10 +79,10 @@ def test_session_cal_missing_file_raises():
 # ========================================================================
 # A2. homography_solver
 # ========================================================================
-def _make_synthetic_corners(inner_cols=6, inner_rows=4, square_mm=30,
+def _make_synthetic_corners(inner_cols=7, inner_rows=5, square_mm=30,
                              fx=912.0, fy=912.0, cx=640.0, cy=360.0,
                              cam_height_mm=600.0):
-    """Project the 24 inner chessboard corners onto a nadir pinhole
+    """Project the 35 inner chessboard corners onto a nadir pinhole
     camera of known intrinsics at cam_height_mm above the plane.
     Chess origin (0,0,0) is centred horizontally under the camera.
     Returns (image_pts (N,2) float32, world_pts (N,2) float32)."""
@@ -221,7 +221,7 @@ def test_touch_probe_shape_is_3():
 # ========================================================================
 # A5. calibrate_chessboard end-to-end (mocked hardware)
 # ========================================================================
-def _draw_synthetic_chessboard(inner_cols=6, inner_rows=4, square_px=80,
+def _draw_synthetic_chessboard(inner_cols=7, inner_rows=5, square_px=80,
                                 image_size=(1280, 720)):
     """Render a flat B/W chessboard centered in the image. Returns a BGR
     image suitable for cv2.findChessboardCorners."""
@@ -274,8 +274,8 @@ def test_calibrate_chessboard_end_to_end_with_mocks():
         assert cal.h_pixel_to_chess_mm.shape == (3, 3)
         assert np.allclose(cal.chess_origin_in_base_m, touched_tcp)
         assert np.allclose(cal.survey_pose_joints_rad, survey_joints)
-        assert cal.chess_pattern["inner_cols"] == 6
-        assert cal.chess_pattern["inner_rows"] == 4
+        assert cal.chess_pattern["inner_cols"] == 7
+        assert cal.chess_pattern["inner_rows"] == 5
         assert cal.camera_height_above_table_m > 0.1
     finally:
         os.unlink(path)

@@ -35,8 +35,8 @@ if _HERE not in sys.path:
 from session_cal import SessionCal
 from homography_solver import solve_homography, camera_height_from_homography
 
-_INNER_COLS = 6
-_INNER_ROWS = 4
+_INNER_COLS = 7
+_INNER_ROWS = 5
 _SQUARE_MM = 30.0
 
 
