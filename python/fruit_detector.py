@@ -48,7 +48,7 @@ HSV_RANGES = {
                     "s": [80, 255], "v": [40, 255]},
     "strawberry":  {"h_wrap1": [0, 10],  "h_wrap2": [170, 180],
                     "s": [80, 255], "v": [40, 255]},
-    "green_calyx": {"h": [35, 85],  "s": [60, 255], "v": [40, 255]},
+    "green_calyx": {"h": [20, 90],  "s": [60, 255], "v": [15, 255]},  # widened 2026-04-22: lab lighting makes strawberry leaves dark olive (V ~15-40, H ~20-35) rather than bright green
 }
 
 _OPEN_KERNEL = np.ones((5, 5), np.uint8)
@@ -95,7 +95,7 @@ def hsv_mask(bgr: np.ndarray, ranges: dict) -> np.ndarray:
 # ------------------------------------------------------------------------
 _BANANA_MIN_AREA = 800
 _BANANA_MAX_AREA = 80000   # widened 2026-04-22 for survey1 ~33 cm: close-up bananas reach ~50k px
-_BANANA_MIN_ASPECT = 1.8
+_BANANA_MIN_ASPECT = 1.5   # loosened 2026-04-22: overhead view of a curved banana has aspect ~1.5-2.0; orange-yellow non-banana items are rare on the lab table
 
 
 def _detect_banana_contours(bgr: np.ndarray) -> list:
@@ -116,12 +116,11 @@ def _detect_banana_contours(bgr: np.ndarray) -> list:
         if aspect < _BANANA_MIN_ASPECT:
             continue
         x, y, w_b, h_b = cv2.boundingRect(c)
-        # Score in [0, 1]: 0.0 at aspect = min (1.8), 1.0 at aspect >= 2.8.
-        # No floor — let CONFIDENCE_MIN be the authoritative gate so the
-        # floor-above-gate silent-drop trap from the 2026-04-22 review
-        # cannot recur.
-        aspect_score = min(1.0, max(0.0,
-            (aspect - _BANANA_MIN_ASPECT) / 1.0))
+        # Score: 0.5 at MIN aspect (so anything that already passes the
+        # aspect gate clears CONFIDENCE_MIN=0.35 cleanly), rising to 1.0
+        # at aspect = MIN + 1.0. Rejected contours (aspect < MIN) never
+        # reach this line because of the `continue` above.
+        aspect_score = 0.5 + min(0.5, (aspect - _BANANA_MIN_ASPECT) / 2.0)
         hits.append(((int(cx), int(cy)), int(area),
                      (int(x), int(y), int(w_b), int(h_b)),
                      float(aspect_score)))
@@ -148,6 +147,24 @@ def _has_green_above(bgr: np.ndarray, bbox: tuple) -> float:
     if band.size == 0:
         return 0.0
     green_mask = hsv_mask(band, HSV_RANGES["green_calyx"])
+    return float((green_mask > 0).mean())
+
+
+def _has_green_in_top_strip(bgr: np.ndarray, bbox: tuple,
+                              strip_pct: float = 0.20) -> float:
+    """Fraction of green pixels in the top strip_pct of the bbox INTERIOR.
+    Complement to _has_green_above: in overhead views the strawberry
+    calyx sits ON TOP of the red body (inside the bbox), not in a band
+    above it. Tomato path uses _has_green_above only (to reject
+    strawberries appearing as tomatoes). Strawberry path uses
+    max(_has_green_above, _has_green_in_top_strip) so both viewing
+    angles confirm the calyx."""
+    x, y, w, h = bbox
+    strip_h = max(1, int(h * strip_pct))
+    strip = bgr[y:y + strip_h, x:x + w]
+    if strip.size == 0:
+        return 0.0
+    green_mask = hsv_mask(strip, HSV_RANGES["green_calyx"])
     return float((green_mask > 0).mean())
 
 
@@ -190,7 +207,7 @@ def _detect_tomato_contours(bgr: np.ndarray) -> list:
 
 
 _STRAWBERRY_MIN_AREA = 200
-_STRAWBERRY_MAX_AREA = 15000      # widened 2026-04-22 proportionally
+_STRAWBERRY_MAX_AREA = 40000      # widened 2026-04-22: close-up strawberries reach ~30k px at survey1 distance
 _STRAWBERRY_MIN_CALYX = 0.05     # same threshold as tomato's rejection band
 
 
@@ -226,15 +243,19 @@ def _detect_strawberry_contours(bgr: np.ndarray) -> list:
         if area < _STRAWBERRY_MIN_AREA or area > _STRAWBERRY_MAX_AREA:
             continue
         x, y, w_b, h_b = cv2.boundingRect(c)
-        calyx_ratio = _has_green_above(bgr, (x, y, w_b, h_b))
+        above_ratio = _has_green_above(bgr, (x, y, w_b, h_b))
+        top_strip_ratio = _has_green_in_top_strip(bgr, (x, y, w_b, h_b))
+        calyx_ratio = max(above_ratio, top_strip_ratio)
         if calyx_ratio <= _STRAWBERRY_MIN_CALYX:
             continue
         taper = _taper_score(c, (x, y, w_b, h_b))
-        # Accept near-round (1.0) to strongly tapered (~3.0). Below 0.9
-        # means narrower top (upside-down, unlikely in overhead view);
-        # above 3.5 means the contour is bizarrely thin at the bottom,
-        # probably a segmentation artifact.
-        if taper < 0.9 or taper > 3.5:
+        # Widened 2026-04-22: in overhead view (camera nearly nadir) the
+        # strawberry's 3-D taper collapses onto a roughly circular blob
+        # and the 2-D taper loses diagnostic power. Keep as a sanity gate
+        # only: reject extreme elongation in either direction (< 0.3 =
+        # pencil-thin at top, > 3.5 = pencil-thin at bottom, both are
+        # segmentation artifacts).
+        if taper < 0.3 or taper > 3.5:
             continue
         M = cv2.moments(c)
         if M["m00"] <= 0:
