@@ -41,11 +41,13 @@ class Detection:
 # Starting values for lab tuning; hsv_tuner.py (D4-AM) can override.
 # ------------------------------------------------------------------------
 HSV_RANGES = {
-    "banana":      {"h": [18, 35],  "s": [80, 255], "v": [80, 255]},
+    # Widened on 2026-04-22 after lab sampling: banana under warm lighting
+    # sits at H≈15 (orange-yellow), and tomato shadows go down to V≈59.
+    "banana":      {"h": [14, 40],  "s": [80, 255], "v": [60, 255]},
     "tomato":      {"h_wrap1": [0, 10],  "h_wrap2": [170, 180],
-                    "s": [80, 255], "v": [60, 255]},
+                    "s": [80, 255], "v": [40, 255]},
     "strawberry":  {"h_wrap1": [0, 10],  "h_wrap2": [170, 180],
-                    "s": [80, 255], "v": [60, 255]},
+                    "s": [80, 255], "v": [40, 255]},
     "green_calyx": {"h": [35, 85],  "s": [60, 255], "v": [40, 255]},
 }
 
@@ -92,7 +94,7 @@ def hsv_mask(bgr: np.ndarray, ranges: dict) -> np.ndarray:
 # base-frame coordinates.
 # ------------------------------------------------------------------------
 _BANANA_MIN_AREA = 800
-_BANANA_MAX_AREA = 30000
+_BANANA_MAX_AREA = 80000   # widened 2026-04-22 for survey1 ~33 cm: close-up bananas reach ~50k px
 _BANANA_MIN_ASPECT = 1.8
 
 
@@ -122,8 +124,9 @@ def _detect_banana_contours(bgr: np.ndarray) -> list:
 
 
 _TOMATO_MIN_AREA = 400
-_TOMATO_MAX_AREA = 15000
-_TOMATO_MIN_CIRCULARITY = 0.7
+_TOMATO_MAX_AREA = 40000       # widened 2026-04-22: close-up tomatoes ~15-25k px at survey1 distance
+_TOMATO_MIN_CIRCULARITY = 0.4   # loosened 2026-04-22: specular highlights bite chunks out of tomato contour, dropping effective circ to ~0.50; green-above rejection keeps strawberries separate
+_TOMATO_MAX_ASPECT = 1.8        # added 2026-04-22: circ alone can't distinguish shadowed round tomato (circ 0.50) from elongated red chili (circ 0.42). Aspect cap does the separation cleanly — real tomatoes sit at ~1.0-1.7, elongated reds are >2.
 _GREEN_ABOVE_BAND_PX = (10, 20)   # band (min, max) px above blob top
 _GREEN_ABOVE_RATIO = 0.05          # green pixels / band area threshold
 
@@ -159,6 +162,14 @@ def _detect_tomato_contours(bgr: np.ndarray) -> list:
         if circ < _TOMATO_MIN_CIRCULARITY:
             continue
         x, y, w_b, h_b = cv2.boundingRect(c)
+        # Use axis-aligned bbox aspect (not minAreaRect): specular
+        # highlights bite into the contour and make minAreaRect pick a
+        # rotated frame with inflated aspect. The axis-aligned bbox
+        # reflects "roundness" in the image plane, which is what we want.
+        if min(w_b, h_b) > 0:
+            aspect = max(w_b, h_b) / min(w_b, h_b)
+            if aspect > _TOMATO_MAX_ASPECT:
+                continue
         green_ratio = _has_green_above(bgr, (x, y, w_b, h_b))
         if green_ratio > _GREEN_ABOVE_RATIO:
             continue
@@ -174,7 +185,7 @@ def _detect_tomato_contours(bgr: np.ndarray) -> list:
 
 
 _STRAWBERRY_MIN_AREA = 200
-_STRAWBERRY_MAX_AREA = 4000
+_STRAWBERRY_MAX_AREA = 15000      # widened 2026-04-22 proportionally
 _STRAWBERRY_MIN_CALYX = 0.05     # same threshold as tomato's rejection band
 
 
