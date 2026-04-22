@@ -127,7 +127,7 @@ def _detect_banana_contours(bgr: np.ndarray) -> list:
     return hits
 
 
-_TOMATO_MIN_AREA = 400
+_TOMATO_MIN_AREA = 1500        # raised 2026-04-22: speckle in shadow regions trips 400, real tomatoes are 10k+ px at survey1 distance
 _TOMATO_MAX_AREA = 40000       # widened 2026-04-22: close-up tomatoes ~15-25k px at survey1 distance
 _TOMATO_MIN_CIRCULARITY = 0.4   # loosened 2026-04-22: specular highlights bite chunks out of tomato contour, dropping effective circ to ~0.50; green-above rejection keeps strawberries separate
 _TOMATO_MAX_ASPECT = 1.8        # added 2026-04-22: circ alone can't distinguish shadowed round tomato (circ 0.50) from elongated red chili (circ 0.42). Aspect cap does the separation cleanly — real tomatoes sit at ~1.0-1.7, elongated reds are >2.
