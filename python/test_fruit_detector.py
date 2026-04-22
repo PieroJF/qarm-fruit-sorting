@@ -68,9 +68,52 @@ def test_detection_to_dict():
     assert out["bbox"] == [5, 10, 20, 20]
 
 
+# ========================================================================
+# B2. hsv_mask helper
+# ========================================================================
+def _solid_bgr(color_bgr, size=(480, 640)):
+    """Return a size-(H, W, 3) uint8 BGR image of a solid color."""
+    H, W = size
+    img = np.zeros((H, W, 3), dtype=np.uint8)
+    img[:, :] = color_bgr
+    return img
+
+
+def test_hsv_mask_single_range_yellow():
+    from fruit_detector import hsv_mask
+    yellow = _solid_bgr((0, 220, 220))  # BGR for bright yellow
+    ranges = {"h": [18, 35], "s": [80, 255], "v": [80, 255]}
+    mask = hsv_mask(yellow, ranges)
+    assert mask.dtype == np.uint8
+    assert mask.shape == (480, 640)
+    assert (mask > 0).mean() > 0.95, (
+        f"yellow mask coverage {(mask > 0).mean():.2f} too low")
+
+
+def test_hsv_mask_red_wrap_around():
+    from fruit_detector import hsv_mask
+    red = _solid_bgr((0, 0, 220))
+    ranges = {"h_wrap1": [0, 10], "h_wrap2": [170, 180],
+              "s": [80, 255], "v": [60, 255]}
+    mask = hsv_mask(red, ranges)
+    assert (mask > 0).mean() > 0.95, (
+        f"red mask coverage {(mask > 0).mean():.2f} too low")
+
+
+def test_hsv_mask_excludes_out_of_range():
+    from fruit_detector import hsv_mask
+    blue = _solid_bgr((220, 0, 0))
+    ranges = {"h": [18, 35], "s": [80, 255], "v": [80, 255]}
+    mask = hsv_mask(blue, ranges)
+    assert (mask > 0).mean() < 0.01
+
+
 if __name__ == "__main__":
     _section("B1 Detection fields", test_detection_fields)
     _section("B1 Detection to_dict", test_detection_to_dict)
+    _section("B2 hsv_mask single (yellow)", test_hsv_mask_single_range_yellow)
+    _section("B2 hsv_mask wrap (red)", test_hsv_mask_red_wrap_around)
+    _section("B2 hsv_mask excludes blue", test_hsv_mask_excludes_out_of_range)
     fails = sum(1 for _, ok, _ in _RESULTS if not ok)
     print(f"\n{len(_RESULTS)} test(s), {fails} failed")
     sys.exit(fails)
