@@ -161,6 +161,26 @@ def test_camera_height_handles_tilted_camera_within_15pct():
         f"(rel err {rel_err*100:.1f}%)")
 
 
+def test_camera_height_at_docstring_boundary_30deg():
+    """Validate the docstring claim that ~30 deg tilt still stays inside
+    the 15% tolerance. cos(30 deg) = 0.866, used as the y-axis scale."""
+    import cv2
+    fx, fy, cx, cy = 912.0, 912.0, 640.0, 360.0
+    true_h_mm = 600.0
+    image, world = _make_synthetic_corners(
+        fx=fx, fy=fy, cx=cx, cy=cy, cam_height_mm=true_h_mm)
+    image_tilted = image.copy()
+    image_tilted[:, 1] = (image_tilted[:, 1] - cy) * 0.866 + cy
+    from homography_solver import (solve_homography,
+                                    camera_height_from_homography)
+    H, _ = solve_homography(image_tilted, world)
+    recovered = camera_height_from_homography(H, fx=fx, fy=fy, cx=cx, cy=cy)
+    rel_err = abs(recovered - true_h_mm) / true_h_mm
+    assert rel_err < 0.15, (
+        f"at docstring boundary (30 deg, y-scale 0.866), recovered "
+        f"{recovered:.1f} vs {true_h_mm:.1f} (rel err {rel_err*100:.1f}%)")
+
+
 if __name__ == "__main__":
     _section("A1 session_cal roundtrip", test_session_cal_roundtrip)
     _section("A1 session_cal missing file", test_session_cal_missing_file_raises)
@@ -168,6 +188,7 @@ if __name__ == "__main__":
     _section("A2 homography rejects collinear", test_homography_rejects_collinear_points)
     _section("A3 camera height nadir", test_camera_height_matches_synthetic_truth)
     _section("A3 camera height tilted", test_camera_height_handles_tilted_camera_within_15pct)
+    _section("A3 camera height 30deg boundary", test_camera_height_at_docstring_boundary_30deg)
     fails = sum(1 for _, ok, _ in _RESULTS if not ok)
     print(f"\n{len(_RESULTS)} test(s), {fails} failed")
     sys.exit(fails)
