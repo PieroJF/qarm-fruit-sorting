@@ -280,6 +280,74 @@ def test_depth_sample_rejects_out_of_range():
     assert z is None
 
 
+# ========================================================================
+# B7. pixel -> base-frame projection
+# ========================================================================
+def _fake_session_cal(origin=(0.30, 0.10, 0.02),
+                      cam_h_m=0.60, square_mm=30):
+    """Build a SessionCal-like dict for testing projection math.
+    H maps pixel (u,v) to chess-XY in mm assuming a nadir camera at
+    cam_h_m above the chess plane."""
+    from session_cal import SessionCal
+    fx = 912.0
+    fy = 912.0
+    cx_p = 640.0
+    cy_p = 360.0
+    cam_h_mm = cam_h_m * 1000.0
+    sx = cam_h_mm / fx
+    sy = cam_h_mm / fy
+    H = np.array([
+        [sx,  0.0, -cx_p * sx],
+        [0.0, sy,  -cy_p * sy],
+        [0.0, 0.0, 1.0],
+    ], dtype=np.float64)
+    cal = SessionCal(
+        timestamp="2026-04-22T00:00:00",
+        chess_origin_in_base_m=np.array(origin),
+        h_pixel_to_chess_mm=H,
+        survey_pose_joints_rad=np.zeros(4),
+        chess_pattern={"cols": 8, "rows": 6, "square_mm": square_mm,
+                        "inner_cols": 7, "inner_rows": 5},
+        d415_intrinsics={"fx": fx, "fy": fy, "cx": cx_p, "cy": cy_p},
+        homography_reproj_rms_px=0.5,
+        camera_height_above_table_m=cam_h_m,
+        image_size=(1280, 720),
+    )
+    return cal
+
+
+def test_pixel_to_base_identity_at_principal_point():
+    from fruit_detector import pixel_to_base_frame
+    cal = _fake_session_cal(origin=(0.30, 0.10, 0.02), cam_h_m=0.60)
+    xyz = pixel_to_base_frame((640, 360), fruit_top_z_mm=0.0, session_cal=cal)
+    assert np.allclose(xyz[:2], [0.30, 0.10], atol=1e-3), xyz
+    assert abs(xyz[2] - 0.02) < 1e-6
+
+
+def test_pixel_to_base_parallax_shrinks_with_fruit_height():
+    """A pixel 100 px off the principal point with a tall fruit (50 mm)
+    should land closer to the principal point's base XY than the same
+    pixel with a flat fruit (0 mm). That is, parallax correction moves
+    the reported XY TOWARDS the optical axis as the fruit gets taller
+    (since we are reporting where the fruit BASE sits)."""
+    from fruit_detector import pixel_to_base_frame
+    cal = _fake_session_cal(origin=(0.30, 0.10, 0.02), cam_h_m=0.60)
+    xyz_flat = pixel_to_base_frame((740, 360), fruit_top_z_mm=0.0,
+                                    session_cal=cal)
+    xyz_tall = pixel_to_base_frame((740, 360), fruit_top_z_mm=50.0,
+                                    session_cal=cal)
+    assert xyz_flat[0] > xyz_tall[0] > 0.30, (
+        f"flat={xyz_flat} tall={xyz_tall}")
+
+
+def test_pixel_to_base_z_equals_origin_plus_fruit_top():
+    from fruit_detector import pixel_to_base_frame
+    cal = _fake_session_cal(origin=(0.30, 0.10, 0.02), cam_h_m=0.60)
+    xyz = pixel_to_base_frame((640, 360), fruit_top_z_mm=45.0,
+                               session_cal=cal)
+    assert abs(xyz[2] - (0.02 + 0.045)) < 1e-6, xyz
+
+
 if __name__ == "__main__":
     _section("B1 Detection fields", test_detection_fields)
     _section("B1 Detection to_dict", test_detection_to_dict)
@@ -297,6 +365,9 @@ if __name__ == "__main__":
     _section("B6 depth sample median", test_depth_sample_returns_median)
     _section("B6 depth sample rejects sparse", test_depth_sample_rejects_mostly_zero)
     _section("B6 depth sample rejects range", test_depth_sample_rejects_out_of_range)
+    _section("B7 px->base principal point", test_pixel_to_base_identity_at_principal_point)
+    _section("B7 px->base parallax", test_pixel_to_base_parallax_shrinks_with_fruit_height)
+    _section("B7 px->base z", test_pixel_to_base_z_equals_origin_plus_fruit_top)
     fails = sum(1 for _, ok, _ in _RESULTS if not ok)
     print(f"\n{len(_RESULTS)} test(s), {fails} failed")
     sys.exit(fails)

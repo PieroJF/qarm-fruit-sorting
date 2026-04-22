@@ -256,3 +256,40 @@ def sample_depth_at_pixel(depth_mm: np.ndarray, center_px: tuple,
     if valid.size < _DEPTH_MIN_VALID:
         return None
     return float(np.median(valid))
+
+
+def pixel_to_base_frame(center_px: tuple, fruit_top_z_mm: float,
+                         session_cal) -> np.ndarray:
+    """
+    Convert a pixel + fruit-top height into a 3-vector XYZ in the robot
+    base frame (metres).
+
+    Applies a nadir-pinhole parallax correction so the returned XY is the
+    fruit's BASE on the table (not the projection of its top). Then uses
+    H_pixel_to_chess_mm to get chess-frame XY in mm and adds the stored
+    chess origin to land in base frame.
+
+    Assumes the camera is approximately nadir at session_cal.camera_height_above_table_m
+    above the table. Error is <2% nadir, <15% at 30 deg tilt.
+    """
+    intr = session_cal.d415_intrinsics
+    cx_p, cy_p = float(intr["cx"]), float(intr["cy"])
+    h_mm = float(session_cal.camera_height_above_table_m) * 1000.0
+    u, v = float(center_px[0]), float(center_px[1])
+    if h_mm <= 0:
+        raise ValueError("camera height must be positive")
+    z = float(fruit_top_z_mm)
+    u_base = cx_p + (u - cx_p) * (h_mm - z) / h_mm
+    v_base = cy_p + (v - cy_p) * (h_mm - z) / h_mm
+    H = np.asarray(session_cal.h_pixel_to_chess_mm, dtype=np.float64)
+    pt = np.array([u_base, v_base, 1.0])
+    w = H @ pt
+    if abs(w[2]) < 1e-9:
+        raise ValueError("homography degenerate at this pixel")
+    chess_x_mm = w[0] / w[2]
+    chess_y_mm = w[1] / w[2]
+    origin = np.asarray(session_cal.chess_origin_in_base_m, dtype=float)
+    x = origin[0] + chess_x_mm / 1000.0
+    y = origin[1] + chess_y_mm / 1000.0
+    z_base = origin[2] + z / 1000.0
+    return np.array([x, y, z_base], dtype=float)
