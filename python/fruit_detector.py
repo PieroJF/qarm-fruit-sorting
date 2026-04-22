@@ -119,3 +119,55 @@ def _detect_banana_contours(bgr: np.ndarray) -> list:
                      (int(x), int(y), int(w_b), int(h_b)),
                      float(max(0.3, aspect_score))))
     return hits
+
+
+_TOMATO_MIN_AREA = 400
+_TOMATO_MAX_AREA = 15000
+_TOMATO_MIN_CIRCULARITY = 0.7
+_GREEN_ABOVE_BAND_PX = (10, 20)   # band (min, max) px above blob top
+_GREEN_ABOVE_RATIO = 0.05          # green pixels / band area threshold
+
+
+def _has_green_above(bgr: np.ndarray, bbox: tuple) -> float:
+    """Return the fraction of green pixels in a band 10-20 px above bbox top.
+    0 if bbox hits the image top."""
+    x, y, w, h = bbox
+    y_lo = max(0, y - _GREEN_ABOVE_BAND_PX[1])
+    y_hi = max(0, y - _GREEN_ABOVE_BAND_PX[0])
+    if y_hi <= y_lo:
+        return 0.0
+    band = bgr[y_lo:y_hi, x:x + w]
+    if band.size == 0:
+        return 0.0
+    green_mask = hsv_mask(band, HSV_RANGES["green_calyx"])
+    return float((green_mask > 0).mean())
+
+
+def _detect_tomato_contours(bgr: np.ndarray) -> list:
+    mask = hsv_mask(bgr, HSV_RANGES["tomato"])
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
+                                    cv2.CHAIN_APPROX_SIMPLE)
+    hits = []
+    for c in contours:
+        area = float(cv2.contourArea(c))
+        if area < _TOMATO_MIN_AREA or area > _TOMATO_MAX_AREA:
+            continue
+        perim = float(cv2.arcLength(c, True))
+        if perim < 1:
+            continue
+        circ = 4 * np.pi * area / (perim * perim)
+        if circ < _TOMATO_MIN_CIRCULARITY:
+            continue
+        x, y, w_b, h_b = cv2.boundingRect(c)
+        green_ratio = _has_green_above(bgr, (x, y, w_b, h_b))
+        if green_ratio > _GREEN_ABOVE_RATIO:
+            continue
+        M = cv2.moments(c)
+        if M["m00"] <= 0:
+            continue
+        cx = int(M["m10"] / M["m00"])
+        cy = int(M["m01"] / M["m00"])
+        conf = float(min(1.0, circ) * (1.0 - green_ratio))
+        hits.append(((cx, cy), int(area),
+                     (int(x), int(y), int(w_b), int(h_b)), conf))
+    return hits

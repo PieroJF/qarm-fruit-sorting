@@ -152,6 +152,49 @@ def test_banana_rejects_tiny_blob():
     assert len(dets) == 0
 
 
+# ========================================================================
+# B4. tomato detection
+# ========================================================================
+def _draw_circle_bgr(size, center, r, color):
+    import cv2
+    H, W = size
+    img = np.zeros((H, W, 3), dtype=np.uint8)
+    cv2.circle(img, center, r, color, -1)
+    return img
+
+
+def test_tomato_finds_round_red():
+    from fruit_detector import _detect_tomato_contours
+    img = _draw_circle_bgr((480, 640), (320, 240), 50, (0, 0, 220))
+    dets = _detect_tomato_contours(img)
+    assert len(dets) == 1, f"expected 1 tomato, got {len(dets)}"
+    (cx, cy), area, bbox, conf = dets[0]
+    assert abs(cx - 320) < 5
+    assert abs(cy - 240) < 5
+    assert area > 7000, f"area={area}"
+    assert conf > 0.5
+
+
+def test_tomato_rejects_red_with_green_above():
+    """A red circle with a green patch directly above it should be read
+    as a strawberry candidate, not a tomato."""
+    import cv2
+    from fruit_detector import _detect_tomato_contours
+    img = _draw_circle_bgr((480, 640), (320, 240), 50, (0, 0, 220))
+    cv2.rectangle(img, (290, 170), (350, 185), (0, 200, 0), -1)
+    dets = _detect_tomato_contours(img)
+    assert len(dets) == 0, (
+        f"tomato detector must reject red+green-above; got {len(dets)}")
+
+
+def test_tomato_rejects_elongated_red():
+    from fruit_detector import _detect_tomato_contours
+    img = _draw_rect_bgr((480, 640), (320, 240), 160, 30,
+                         (0, 0, 220))
+    dets = _detect_tomato_contours(img)
+    assert len(dets) == 0, "elongated red must not register as tomato"
+
+
 if __name__ == "__main__":
     _section("B1 Detection fields", test_detection_fields)
     _section("B1 Detection to_dict", test_detection_to_dict)
@@ -161,6 +204,9 @@ if __name__ == "__main__":
     _section("B3 banana finds one", test_banana_contours_finds_one)
     _section("B3 banana rejects round", test_banana_rejects_round_shape)
     _section("B3 banana rejects tiny", test_banana_rejects_tiny_blob)
+    _section("B4 tomato finds round red", test_tomato_finds_round_red)
+    _section("B4 tomato rejects green-above", test_tomato_rejects_red_with_green_above)
+    _section("B4 tomato rejects elongated", test_tomato_rejects_elongated_red)
     fails = sum(1 for _, ok, _ in _RESULTS if not ok)
     print(f"\n{len(_RESULTS)} test(s), {fails} failed")
     sys.exit(fails)
