@@ -76,9 +76,58 @@ def test_session_cal_missing_file_raises():
         pass
 
 
+# ========================================================================
+# A2. homography_solver
+# ========================================================================
+def _make_synthetic_corners(inner_cols=6, inner_rows=4, square_mm=30,
+                             fx=912.0, fy=912.0, cx=640.0, cy=360.0,
+                             cam_height_mm=600.0):
+    """Project the 24 inner chessboard corners onto a nadir pinhole
+    camera of known intrinsics at cam_height_mm above the plane.
+    Chess origin (0,0,0) is centred horizontally under the camera.
+    Returns (image_pts (N,2) float32, world_pts (N,2) float32)."""
+    pattern_w = (inner_cols - 1) * square_mm
+    pattern_h = (inner_rows - 1) * square_mm
+    x0, y0 = -pattern_w / 2, -pattern_h / 2
+    world = np.array([[x0 + i * square_mm, y0 + j * square_mm]
+                      for j in range(inner_rows)
+                      for i in range(inner_cols)], dtype=np.float32)
+    image = np.zeros_like(world)
+    image[:, 0] = cx + fx * world[:, 0] / cam_height_mm
+    image[:, 1] = cy + fy * world[:, 1] / cam_height_mm
+    return image.astype(np.float32), world.astype(np.float32)
+
+
+def test_homography_recovers_identity_scale():
+    from homography_solver import solve_homography
+
+    image, world = _make_synthetic_corners()
+    H, rms = solve_homography(image, world)
+    import cv2
+    proj = cv2.perspectiveTransform(image.reshape(-1, 1, 2), H).reshape(-1, 2)
+    err = np.linalg.norm(proj - world, axis=1)
+    assert err.max() < 0.1, f"max reprojection error {err.max():.4f} mm"
+    assert rms < 0.05, f"rms {rms:.4f} too high"
+
+
+def test_homography_rejects_collinear_points():
+    from homography_solver import solve_homography
+    collinear_img = np.array([[i * 10.0, 100.0] for i in range(10)],
+                              dtype=np.float32)
+    collinear_world = np.array([[i * 30.0, 0.0] for i in range(10)],
+                                dtype=np.float32)
+    try:
+        solve_homography(collinear_img, collinear_world)
+        assert False, "should have raised on collinear input"
+    except ValueError:
+        pass
+
+
 if __name__ == "__main__":
     _section("A1 session_cal roundtrip", test_session_cal_roundtrip)
     _section("A1 session_cal missing file", test_session_cal_missing_file_raises)
+    _section("A2 homography recovers identity", test_homography_recovers_identity_scale)
+    _section("A2 homography rejects collinear", test_homography_rejects_collinear_points)
     fails = sum(1 for _, ok, _ in _RESULTS if not ok)
     print(f"\n{len(_RESULTS)} test(s), {fails} failed")
     sys.exit(fails)
