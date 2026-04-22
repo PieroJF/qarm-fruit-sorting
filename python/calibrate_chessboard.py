@@ -78,6 +78,16 @@ def run_calibration_core(
 ) -> SessionCal:
     """Given inputs from the interactive CLI (or tests), solve the
     homography, derive camera height, build a SessionCal, and save it."""
+    # Always save the captured frame so chessboard-detection failures can
+    # be debugged visually without re-jogging Phase 1.
+    logs_dir = os.path.join(os.path.dirname(_HERE), "logs")
+    try:
+        os.makedirs(logs_dir, exist_ok=True)
+        debug_path = os.path.join(logs_dir, "calibration_latest.png")
+        cv2.imwrite(debug_path, captured_frame)
+        print(f"  [debug] survey frame saved to {debug_path}")
+    except Exception as ex:
+        print(f"  [warn] could not save debug frame: {ex}")
     image_pts = _find_chessboard_corners(captured_frame)
     world_pts = _chess_world_pts()
     H_pixel_to_chess, _rms_mm = solve_homography(image_pts, world_pts)
