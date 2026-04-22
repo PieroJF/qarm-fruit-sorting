@@ -151,20 +151,43 @@ def main(argv=None):
     driver.connect()
     time.sleep(0.3)
 
+    # Cache location for the Phase-1 touched TCP, so iterating on Phase-2
+    # camera/framing issues doesn't require re-jogging every time.
+    touch_cache = os.path.join(os.path.dirname(_HERE), "logs",
+                                "last_touched_tcp.json")
+
     try:
         # --- Phase 1: origin registration
         if args.no_touch:
-            if not os.path.exists(args.out):
-                sys.exit(f"--no-touch but {args.out} does not exist")
-            prior = SessionCal.load(args.out)
-            touched_tcp = prior.chess_origin_in_base_m
-            print(f"  reusing chess_origin_in_base_m = {touched_tcp}")
+            # Priority: session_cal.json -> touch cache -> fail
+            if os.path.exists(args.out):
+                prior = SessionCal.load(args.out)
+                touched_tcp = prior.chess_origin_in_base_m
+                print(f"  reusing chess_origin_in_base_m from "
+                      f"{args.out}: {touched_tcp}")
+            elif os.path.exists(touch_cache):
+                with open(touch_cache) as f:
+                    touched_tcp = np.asarray(json.load(f)["tcp"], dtype=float)
+                print(f"  reusing touched_tcp from cache "
+                      f"{touch_cache}: {touched_tcp}")
+            else:
+                sys.exit(f"--no-touch but neither {args.out} nor "
+                         f"{touch_cache} exists")
         else:
             print("Phase 1: Place chessboard flat on table. Jog gripper "
                   "tip to the TOP-LEFT INNER CORNER. Press ENTER to "
                   "confirm, ESC to abort.")
             touched_tcp = jog_and_capture(driver)
             print(f"  origin TCP = {touched_tcp}")
+            # Cache so Phase 2 retries don't require re-jogging.
+            try:
+                os.makedirs(os.path.dirname(touch_cache), exist_ok=True)
+                with open(touch_cache, "w") as f:
+                    json.dump({"tcp": list(touched_tcp)}, f)
+                print(f"  [cache] saved to {touch_cache} "
+                      f"(reuse via --no-touch)")
+            except Exception as ex:
+                print(f"  [warn] could not cache touched_tcp: {ex}")
 
         # --- Phase 2: homography capture
         tp_path = os.path.join(os.path.dirname(_HERE), "teach_points.json")
@@ -183,13 +206,31 @@ def main(argv=None):
         cam = QArmCamera()
         cam.open()
         try:
+            # Warm up until the sensor actually delivers non-empty frames.
+            # cam.read() returns the buffer regardless of frame validity,
+            # so a fixed-count warm-up can silently yield all-zero frames.
+            # Match the preflight pattern: poll until mean(color) > 5.
+            deadline = time.time() + 10.0
+            while time.time() < deadline:
+                try:
+                    c, _ = cam.read()
+                except Exception:
+                    continue
+                if c.mean() > 5:
+                    break
+            else:
+                raise RuntimeError(
+                    "camera warm-up timeout - no valid frame after 10 s. "
+                    "Unplug/replug D415 or power-cycle the QArm.")
             frames = []
-            for _ in range(30):
-                c, _ = cam.read()
             for _ in range(5):
                 c, _ = cam.read()
                 frames.append(c.copy())
             captured = np.median(np.stack(frames), axis=0).astype(np.uint8)
+            if captured.mean() < 5:
+                raise RuntimeError(
+                    f"captured frame is mostly black (mean={captured.mean():.1f}). "
+                    "D415 lost stream mid-capture; retry.")
             intr = {
                 "fx": float(cam.intrinsics["fx"]),
                 "fy": float(cam.intrinsics["fy"]),
