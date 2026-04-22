@@ -247,6 +247,39 @@ def test_strawberry_rejects_red_no_calyx():
         f"strawberry must require green calyx; got {len(dets)}")
 
 
+# ========================================================================
+# B6. depth sampling
+# ========================================================================
+def test_depth_sample_returns_median():
+    from fruit_detector import sample_depth_at_pixel
+    depth = np.zeros((480, 640), dtype=np.uint16)
+    depth[238:243, 318:323] = np.array([
+        [100, 105, 110, 108, 102],
+        [107, 113, 115, 112, 106],
+        [104, 109, 120, 116, 108],
+        [103, 108, 113, 110, 105],
+        [101, 106, 111, 107, 102]], dtype=np.uint16)
+    z = sample_depth_at_pixel(depth, (320, 240), patch=5)
+    assert z is not None
+    assert 105 < z < 115, f"median {z} outside expected"
+
+
+def test_depth_sample_rejects_mostly_zero():
+    from fruit_detector import sample_depth_at_pixel
+    depth = np.zeros((480, 640), dtype=np.uint16)
+    depth[238, 318:321] = 100
+    z = sample_depth_at_pixel(depth, (320, 240), patch=5)
+    assert z is None, f"should reject sparse depth, got {z}"
+
+
+def test_depth_sample_rejects_out_of_range():
+    from fruit_detector import sample_depth_at_pixel
+    depth = np.full((480, 640), 2000, dtype=np.uint16)
+    z = sample_depth_at_pixel(depth, (320, 240), patch=5,
+                               min_mm=10, max_mm=800)
+    assert z is None
+
+
 if __name__ == "__main__":
     _section("B1 Detection fields", test_detection_fields)
     _section("B1 Detection to_dict", test_detection_to_dict)
@@ -261,6 +294,9 @@ if __name__ == "__main__":
     _section("B4 tomato rejects elongated", test_tomato_rejects_elongated_red)
     _section("B5 strawberry tapered with calyx", test_strawberry_finds_tapered_red_with_calyx)
     _section("B5 strawberry rejects no-calyx", test_strawberry_rejects_red_no_calyx)
+    _section("B6 depth sample median", test_depth_sample_returns_median)
+    _section("B6 depth sample rejects sparse", test_depth_sample_rejects_mostly_zero)
+    _section("B6 depth sample rejects range", test_depth_sample_rejects_out_of_range)
     fails = sum(1 for _, ok, _ in _RESULTS if not ok)
     print(f"\n{len(_RESULTS)} test(s), {fails} failed")
     sys.exit(fails)

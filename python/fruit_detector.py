@@ -231,3 +231,28 @@ def _detect_strawberry_contours(bgr: np.ndarray) -> list:
                      (int(x), int(y), int(w_b), int(h_b)),
                      max(0.3, conf)))
     return hits
+
+
+_DEPTH_MIN_VALID = 8       # min valid samples in the patch
+_DEPTH_MIN_MM = 10
+_DEPTH_MAX_MM = 800
+
+
+def sample_depth_at_pixel(depth_mm: np.ndarray, center_px: tuple,
+                           patch: int = 5,
+                           min_mm: int = _DEPTH_MIN_MM,
+                           max_mm: int = _DEPTH_MAX_MM):
+    """Return median depth (in mm) of a patch around (cx, cy), or None
+    if the patch has fewer than _DEPTH_MIN_VALID samples inside
+    [min_mm, max_mm]."""
+    cx, cy = int(center_px[0]), int(center_px[1])
+    half = patch // 2
+    y_lo = max(0, cy - half)
+    y_hi = min(depth_mm.shape[0], cy + half + 1)
+    x_lo = max(0, cx - half)
+    x_hi = min(depth_mm.shape[1], cx + half + 1)
+    patch_vals = depth_mm[y_lo:y_hi, x_lo:x_hi].astype(np.int32).ravel()
+    valid = patch_vals[(patch_vals >= min_mm) & (patch_vals <= max_mm)]
+    if valid.size < _DEPTH_MIN_VALID:
+        return None
+    return float(np.median(valid))
