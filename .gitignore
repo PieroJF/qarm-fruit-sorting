@@ -17,6 +17,7 @@ venv/
 # Runtime / session files (local to each workspace)
 teach_points.json
 calibration.json
+session_cal.json
 logs/
 
 # Live camera captures (workspace-specific)
