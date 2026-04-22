@@ -181,8 +181,10 @@ def main(argv=None):
                 frames.append(c.copy())
             captured = np.median(np.stack(frames), axis=0).astype(np.uint8)
             intr = {
-                "fx": float(cam.fx), "fy": float(cam.fy),
-                "cx": float(cam.cx), "cy": float(cam.cy),
+                "fx": float(cam.intrinsics["fx"]),
+                "fy": float(cam.intrinsics["fy"]),
+                "cx": float(cam.intrinsics["cx"]),
+                "cy": float(cam.intrinsics["cy"]),
             }
         finally:
             cam.close()
