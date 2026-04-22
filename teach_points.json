@@ -1,4 +1,9 @@
 {
+  "survey1": {
+    "joints_rad": null,
+    "gripper": 0.10,
+    "notes": "Overhead survey pose. Frames workspace + chessboard corner. TO BE TAUGHT on D4 lab. Set joints_rad to a 4-element array."
+  },
   "pickhome1": {
     "label": "pickhome1",
     "joints_rad": [

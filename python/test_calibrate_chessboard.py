@@ -218,6 +218,69 @@ def test_touch_probe_shape_is_3():
     assert tcp.shape == (3,), f"expected shape (3,) got {tcp.shape}"
 
 
+# ========================================================================
+# A5. calibrate_chessboard end-to-end (mocked hardware)
+# ========================================================================
+def _draw_synthetic_chessboard(inner_cols=6, inner_rows=4, square_px=80,
+                                image_size=(1280, 720)):
+    """Render a flat B/W chessboard centered in the image. Returns a BGR
+    image suitable for cv2.findChessboardCorners."""
+    import cv2
+    W, H = image_size
+    img = np.full((H, W, 3), 255, dtype=np.uint8)
+    ncol = inner_cols + 1
+    nrow = inner_rows + 1
+    pattern_w = ncol * square_px
+    pattern_h = nrow * square_px
+    x0 = (W - pattern_w) // 2
+    y0 = (H - pattern_h) // 2
+    for j in range(nrow):
+        for i in range(ncol):
+            if (i + j) % 2 == 1:
+                x = x0 + i * square_px
+                y = y0 + j * square_px
+                img[y:y+square_px, x:x+square_px] = 0
+    return img
+
+
+def test_calibrate_chessboard_end_to_end_with_mocks():
+    """Full pipeline with a fake driver + a rendered synthetic chessboard.
+    Verifies the output session_cal.json is well-formed and the
+    homography RMS is small."""
+    import cv2
+    from calibrate_chessboard import run_calibration_core
+    from session_cal import SessionCal
+
+    driver = _FakeDriver(np.array([0.1, -0.2, 0.3, 0.0]))
+    frame = _draw_synthetic_chessboard()
+    touched_tcp = np.array([0.30, 0.10, 0.00])
+    survey_joints = np.array([0.0, 0.8, -0.5, 0.0])
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json",
+                                      delete=False) as f:
+        path = f.name
+    try:
+        run_calibration_core(
+            touched_tcp=touched_tcp,
+            survey_joints=survey_joints,
+            captured_frame=frame,
+            d415_intrinsics={"fx": 912.6, "fy": 911.3,
+                              "cx": 635.4, "cy": 343.0},
+            out_path=path,
+        )
+        cal = SessionCal.load(path)
+        assert cal.homography_reproj_rms_px < 2.0, (
+            f"rms {cal.homography_reproj_rms_px:.2f} px too high")
+        assert cal.h_pixel_to_chess_mm.shape == (3, 3)
+        assert np.allclose(cal.chess_origin_in_base_m, touched_tcp)
+        assert np.allclose(cal.survey_pose_joints_rad, survey_joints)
+        assert cal.chess_pattern["inner_cols"] == 6
+        assert cal.chess_pattern["inner_rows"] == 4
+        assert cal.camera_height_above_table_m > 0.1
+    finally:
+        os.unlink(path)
+
+
 if __name__ == "__main__":
     _section("A1 session_cal roundtrip", test_session_cal_roundtrip)
     _section("A1 session_cal missing file", test_session_cal_missing_file_raises)
@@ -228,6 +291,8 @@ if __name__ == "__main__":
     _section("A3 camera height 30deg boundary", test_camera_height_at_docstring_boundary_30deg)
     _section("A4 touch_probe returns FK", test_touch_probe_returns_tcp_from_fk)
     _section("A4 touch_probe shape", test_touch_probe_shape_is_3)
+    _section("A5 calibrate end-to-end",
+             test_calibrate_chessboard_end_to_end_with_mocks)
     fails = sum(1 for _, ok, _ in _RESULTS if not ok)
     print(f"\n{len(_RESULTS)} test(s), {fails} failed")
     sys.exit(fails)
