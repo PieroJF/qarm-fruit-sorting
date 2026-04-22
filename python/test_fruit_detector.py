@@ -391,14 +391,26 @@ def test_detect_fruits_end_to_end():
         assert 0.0 < d.confidence <= 1.0
 
 
-def test_detect_fruits_skips_invalid_depth():
-    """Fruit blobs with no valid depth (all-zero patch) must be dropped."""
-    from fruit_detector import detect_fruits
+def test_detect_fruits_falls_back_on_invalid_depth():
+    """Fruit blobs with no valid depth should still be detected, using the
+    per-type default height from _FRUIT_TOP_Z_MM. Dropping on null depth
+    (the original spec Q5=B behaviour) was too strict for the tilted
+    survey pose; D4 smoke test showed D415 depth was unreliable. We
+    degrade gracefully to a flat-table assumption instead."""
+    from fruit_detector import detect_fruits, _FRUIT_TOP_Z_MM
     cal = _fake_session_cal(origin=(0.30, 0.10, 0.02), cam_h_m=0.60)
     bgr, depth, _ = _compose_test_scene()
     depth = np.zeros_like(depth)
     dets = detect_fruits(bgr, depth, cal)
-    assert len(dets) == 0, f"expected 0 detections with null depth, got {len(dets)}"
+    types = [d.fruit_type for d in dets]
+    assert "banana" in types
+    assert "tomato" in types
+    assert "strawberry" in types
+    for d in dets:
+        expected_z = cal.chess_origin_in_base_m[2] + _FRUIT_TOP_Z_MM[d.fruit_type] / 1000.0
+        assert abs(d.center_base_m[2] - expected_z) < 1e-6, (
+            f"{d.fruit_type}: base_z {d.center_base_m[2]:.4f} vs expected "
+            f"{expected_z:.4f}")
 
 
 def test_detect_fruits_empty_scene():
@@ -431,7 +443,7 @@ if __name__ == "__main__":
     _section("B7 px->base parallax", test_pixel_to_base_parallax_shrinks_with_fruit_height)
     _section("B7 px->base z", test_pixel_to_base_z_equals_origin_plus_fruit_top)
     _section("B8 detect end-to-end", test_detect_fruits_end_to_end)
-    _section("B8 detect skips null depth", test_detect_fruits_skips_invalid_depth)
+    _section("B8 detect falls back on null depth", test_detect_fruits_falls_back_on_invalid_depth)
     _section("B8 detect empty scene", test_detect_fruits_empty_scene)
     fails = sum(1 for _, ok, _ in _RESULTS if not ok)
     print(f"\n{len(_RESULTS)} test(s), {fails} failed")

@@ -308,12 +308,46 @@ def pixel_to_base_frame(center_px: tuple, fruit_top_z_mm: float,
 
 CONFIDENCE_MIN = 0.35
 
+# Per-type fruit top-of-fruit height above the table surface (mm).
+# Used when D415 depth is missing OR outside a plausible range. In the
+# 2026-04-22 D4 smoke test, survey1 was ~42 deg off nadir and D415 depth
+# along the oblique ray gave values ~2x the true vertical height. Falling
+# back to these defaults gives stable base-Z for picking.
+_FRUIT_TOP_Z_MM = {
+    "banana": 25,
+    "tomato": 50,
+    "strawberry": 25,
+}
+
+
+def _resolve_top_z(fruit_type: str, depth_mm: np.ndarray, center_px: tuple,
+                    session_cal) -> float:
+    """Return the fruit-top Z in mm (above the chess plane) to use for
+    parallax + base-frame projection. Prefers D415 depth when it falls
+    inside a plausible band; otherwise uses the per-type default."""
+    default_z = float(_FRUIT_TOP_Z_MM.get(fruit_type, 30))
+    h_mm = float(session_cal.camera_height_above_table_m) * 1000.0
+    # Plausible fruit top heights: 5 mm (crumb) to h_mm - 10 mm (nearly at camera).
+    # Anything below this band is noise; above this band is wall/background.
+    sampled = sample_depth_at_pixel(depth_mm, center_px)
+    if sampled is None:
+        return default_z
+    # Depth from D415 is (approximately) distance-along-ray, so on a tilted
+    # survey pose it can exceed camera_height. Reject anything > h_mm or
+    # < 5 mm as garbage and fall back to the default.
+    if sampled > h_mm or sampled < 5:
+        return default_z
+    # Convert depth (distance from camera to fruit top) into fruit-top height
+    # above the table: fruit_top_z = h_mm - sampled.
+    return max(5.0, h_mm - float(sampled))
+
 
 def detect_fruits(color_bgr: np.ndarray, depth_mm: np.ndarray,
                    session_cal) -> list[Detection]:
     """
-    Top-level detector. Returns every fruit found with a valid depth
-    sample and a confidence >= CONFIDENCE_MIN.
+    Top-level detector. Returns every fruit found with confidence
+    >= CONFIDENCE_MIN. Uses D415 depth when available+plausible;
+    falls back to per-type default heights otherwise (see _resolve_top_z).
 
     Processing order: banana -> tomato -> strawberry. This order does
     not matter for correctness — each detector runs independently on
@@ -329,9 +363,8 @@ def detect_fruits(color_bgr: np.ndarray, depth_mm: np.ndarray,
         for (cx, cy), area, bbox, conf in fn(color_bgr):
             if conf < CONFIDENCE_MIN:
                 continue
-            top_z_mm = sample_depth_at_pixel(depth_mm, (cx, cy))
-            if top_z_mm is None:
-                continue
+            top_z_mm = _resolve_top_z(
+                fruit_type, depth_mm, (cx, cy), session_cal)
             try:
                 xyz_base = pixel_to_base_frame(
                     (cx, cy), top_z_mm, session_cal)
