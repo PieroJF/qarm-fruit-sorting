@@ -77,9 +77,9 @@ def jog_and_capture(driver, jog_step_rad: float = 0.02,
             if key == 27:                          # ESC
                 raise KeyboardInterrupt("jog aborted by operator")
             if key == ord("z"):
-                grip = max(0.05, grip - jog_step_grip)  # z = close
+                grip = min(0.90, grip + jog_step_grip)  # z = close
             elif key == ord("x"):
-                grip = min(0.95, grip + jog_step_grip)  # x = open
+                grip = max(0.15, grip - jog_step_grip)  # x = open
             elif key in step_map:
                 idx, sign = step_map[key]
                 joints[idx] += sign * jog_step_rad
