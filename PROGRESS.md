@@ -7,6 +7,18 @@
 
 ---
 
+## 0. Sprint state (2026-04-23)
+
+**D3 complete** — picker_viewer + survey_capture + pick_single + main_final rewrite landed. Preflight swapped UGreen/VisualRef for session_cal + chessboard-still-visible. MATLAB facade demo queue gutted. Pending: D4 lab tuning of HSV, first end-to-end pick test (D4 AM).
+
+Test suites:
+- test_integration.py (FSM regressions) — still green
+- test_pick_single.py (3 new tests) — green
+- test_survey_capture.py (3 new tests) — green
+- test_picker_viewer.py (8 new tests) — green
+
+---
+
 ## 0. Sprint state (2026-04-20)
 
 Phase A of `docs/superpowers/plans/2026-04-20-final-sprint.md` **complete through A7.5** (all dev-machine work). Phase B awaits lab session access.
