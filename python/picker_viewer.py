@@ -140,29 +140,35 @@ def _pick_category(driver, camera, session_cal, controller,
     from survey_capture import capture_fruits
     picks_done = 0
     retries = {}
+    skipped_keys = set()
     while picks_done < MAX_CATEGORY_PICKS:
+        # Service OpenCV events so ESC can abort between picks (spec §7.5).
+        if (cv2.waitKey(1) & 0xFF) == 27:
+            print("  [picker] ESC pressed — aborting batch")
+            return picks_done
         if should_abort_fn():
-            print("  [picker] batch aborted by ESC")
+            print("  [picker] batch aborted")
             break
         try:
             dets, diag = capture_fruits(driver, camera, session_cal)
         except Exception as ex:
             print(f"  [picker] capture failed mid-batch: {ex}")
             break
-        matches = _filter_by_type(dets, fruit_type)
+        matches = [d for d in _filter_by_type(dets, fruit_type)
+                   if _pixel_key(d) not in skipped_keys]
         if not matches:
             break
         target = _nearest_to_home(matches, controller.HOME_POS[:2])
         key = _pixel_key(target)
-        if retries.get(key, 0) >= RETRY_LIMIT_PER_TARGET:
-            print(f"  [picker] skipping stuck target at {key}")
-            continue
         success = _pick_one(controller, target)
         if success:
             picks_done += 1
             retries.pop(key, None)
         else:
             retries[key] = retries.get(key, 0) + 1
+            if retries[key] >= RETRY_LIMIT_PER_TARGET:
+                print(f"  [picker] marking stuck target {key} as skipped")
+                skipped_keys.add(key)
     return picks_done
 
 

@@ -103,11 +103,51 @@ def test_pick_one_calls_controller():
     return name, True, "ctrl.pick_single called with det base_m + type"
 
 
+class FakePickerBatchCtx:
+    """Minimal fake driver/camera/session_cal that make capture_fruits
+    return a fixed detection list every call, for _pick_category testing."""
+    def __init__(self, always_same_det):
+        self.det = always_same_det
+
+
+def test_pick_category_skips_stuck_target():
+    """A fruit that pick_single always fails on must be skipped after
+    RETRY_LIMIT_PER_TARGET tries, not loop forever."""
+    import picker_viewer as pv
+    name = "pick_category_skips_stuck"
+    det = _mk_det("tomato", 200, 200)
+    det.center_base_m = np.array([0.5, 0.1, 0.05])
+
+    class Cam: pass
+    class Drv: pass
+    class Cal: pass
+    class Ctrl:
+        HOME_POS = np.array([0.4, 0.0, 0.3])
+        sorted_count = 0
+        def pick_single(self, xyz, t, dt=0.01):
+            return False    # always fails → target becomes stuck
+
+    # Monkey-patch capture_fruits to return the stuck det every time.
+    orig = None
+    import survey_capture as sc
+    orig = sc.capture_fruits
+    sc.capture_fruits = lambda d, c, s: ([det], {"warnings": []})
+    try:
+        n = pv._pick_category(Drv(), Cam(), Cal(), Ctrl(),
+                               "tomato", lambda: False)
+    finally:
+        sc.capture_fruits = orig
+    # Must terminate (no hang), sorted nothing.
+    assert n == 0, f"picks_done={n}"
+    return name, True, "stuck target terminated without hang"
+
+
 TESTS = [
     test_nearest_within_radius, test_nearest_outside_radius_returns_none,
     test_nearest_empty_list_returns_none, test_filter_by_type,
     test_annotate_returns_image_same_shape, test_hud_text_contains_counts,
     test_pick_one_calls_controller,
+    test_pick_category_skips_stuck_target,
 ]
 
 
