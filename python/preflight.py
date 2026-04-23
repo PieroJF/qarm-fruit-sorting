@@ -1,37 +1,31 @@
 """Pre-lab-session sanity script.
 
-Runs 7 checks in order. Each check returns (ok, message). The script
-prints a green 'PREFLIGHT OK' or red 'PREFLIGHT FAIL: <reason>' and
-exits with the number of failing checks.
+Runs a handful of checks in order. Each check returns (ok, message). The
+script prints a green 'PREFLIGHT OK' or red 'PREFLIGHT FAIL: <reason>'
+and exits with the number of failing checks.
 
 Checks:
   1. QArm connect + read_all + one set_joints round trip (-843 early).
   2. D415 warmup (color mean > 5, depth valid > 10%).
-  3. UGreen open (idx=3 MSMF), one frame with mean > 5.
-  4. calibration.json loadable; RMS printed; age < 7 d; pose label.
+  3. session_cal.json loadable; RMS < 2.0 px; age < 12 h; survey pose
+     present.
+  4. Chessboard still visible from survey1 (homography residual small).
   5. HSV detector runs on one D415 frame; per-blob circ/sat printed.
-  6. Offline integration tests (test_integration + test_ugreen_tracker
-     + test_calibrate_closed_loop) — zero hardware dependency.
-  7. Visual reference: arm -> pickhome1; UGreen image-diff against
-     stored reference; TCP pixel within 20 px of reference TCP.
+  6. Offline tests — zero hardware dependency.
 
 Usage:
-  C:/Python313/python.exe python/preflight.py            # full
-  C:/Python313/python.exe python/preflight.py --offline  # skip 1,2,3,7
+  py -3.13 python/preflight.py            # full
+  py -3.13 python/preflight.py --offline  # hardware checks skipped
 """
 import os
 import sys
-import json
 import time
 import subprocess
 from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, ".."))
-CALIB_FILE = os.path.join(REPO, "calibration.json")
-REF_FRAME = os.path.join(REPO, "logs", "ugreen_pickhome1_reference.png")
-REF_TCP = os.path.join(REPO, "logs", "ugreen_pickhome1_tcp.json")
-BASELINE = os.path.join(REPO, "logs", "ugreen_baseline.png")
+SESSION_CAL = os.path.join(REPO, "session_cal.json")
 
 ANSI_RED = "\033[91m"
 ANSI_GREEN = "\033[92m"
@@ -98,40 +92,84 @@ def check_d415():
         except Exception: pass
 
 
-def check_ugreen():
+def check_session_cal():
+    if not os.path.exists(SESSION_CAL):
+        return False, (f"{os.path.basename(SESSION_CAL)} missing — "
+                        f"run calibrate_chessboard.py")
     try:
-        from ugreen_tracker import capture
-        f = capture(warmup=20)
-        return True, f"frame {f.shape} mean={f.mean():.0f}"
+        from session_cal import SessionCal
+        cal = SessionCal.load(SESSION_CAL)
     except Exception as ex:
-        return False, f"{ex}"
-
-
-def check_calibration():
-    if not os.path.exists(CALIB_FILE):
-        return False, f"{CALIB_FILE} missing"
-    with open(CALIB_FILE) as f:
-        cal = json.load(f)
-    rms = cal.get("rms_residual_mm", None)
-    pose = cal.get("pose_label", "unspecified")
-    ts = cal.get("timestamp", "?")
-    age_days = None
+        return False, f"load: {ex}"
+    rms = float(cal.homography_reproj_rms_px)
     try:
-        age_days = (datetime.now() - datetime.fromisoformat(ts)).days
+        age_h = (datetime.now()
+                 - datetime.fromisoformat(cal.timestamp)
+                 ).total_seconds() / 3600.0
     except Exception:
-        pass
+        age_h = None
     warn = []
     ok = True
-    if rms is None:
-        warn.append("no RMS")
-    elif rms > 50:
-        warn.append(f"RMS={rms:.0f}mm > 50"); ok = False
-    if age_days is not None and age_days > 7:
-        warn.append(f"age={age_days}d > 7"); ok = False
-    detail = f"RMS={rms}mm pose={pose} age={age_days}d"
+    if rms >= 2.0:
+        warn.append(f"RMS={rms:.2f}px >= 2.0"); ok = False
+    if age_h is not None and age_h > 12:
+        warn.append(f"age={age_h:.1f}h > 12"); ok = False
+    if cal.survey_pose_joints_rad is None or len(cal.survey_pose_joints_rad) != 4:
+        warn.append("survey_pose missing"); ok = False
+    detail = f"RMS={rms:.2f}px age={age_h:.1f}h" if age_h is not None \
+        else f"RMS={rms:.2f}px age=?"
     if warn:
         detail += f"  warnings={warn}"
     return ok, detail
+
+
+def check_chessboard_still_visible():
+    """Move arm to survey1, capture one frame, check chessboard residual."""
+    try:
+        from session_cal import SessionCal
+        from camera import QArmCamera
+        from qarm_driver import QArmDriver
+        from survey_capture import _warmup_and_capture, _chessboard_residual
+        from calibrate_closed_loop import slow_move_to_joints
+    except Exception as ex:
+        return False, f"import: {ex}"
+    if not os.path.exists(SESSION_CAL):
+        return False, "session_cal missing"
+    try:
+        cal = SessionCal.load(SESSION_CAL)
+    except Exception as ex:
+        return False, f"load: {ex}"
+    q = QArmDriver()
+    try:
+        q.connect(); time.sleep(0.3)
+        slow_move_to_joints(q, cal.survey_pose_joints_rad, 0.10)
+    except Exception as ex:
+        try: q.card.close()
+        except Exception: pass
+        return False, f"arm move: {ex}"
+    cam = QArmCamera()
+    try:
+        cam.open()
+        color, _, _ = _warmup_and_capture(cam)
+    except Exception as ex:
+        try: cam.close()
+        except Exception: pass
+        try: q.card.close()
+        except Exception: pass
+        return False, f"capture: {ex}"
+    finally:
+        try: cam.close()
+        except Exception: pass
+        try: q.card.close()
+        except Exception: pass
+        q._connected = False
+    residual, n = _chessboard_residual(color, cal)
+    if residual is None:
+        return False, f"chessboard not found ({n} corners)"
+    if residual > 10.0:
+        return False, f"residual={residual:.1f}mm > 10 — recalibrate"
+    warn = " (drift warn)" if residual > 3.0 else ""
+    return True, f"residual={residual:.1f}mm corners={n}{warn}"
 
 
 def check_hsv():
@@ -163,11 +201,14 @@ def check_hsv():
 
 
 def check_offline_tests():
-    """Run the three test scripts in-process and sum their exit codes."""
+    """Run the offline test scripts in-process and sum their exit codes."""
     test_files = [
         os.path.join(HERE, "test_integration.py"),
-        os.path.join(HERE, "test_ugreen_tracker.py"),
-        os.path.join(HERE, "test_calibrate_closed_loop.py"),
+        os.path.join(HERE, "test_fruit_detector.py"),
+        os.path.join(HERE, "test_calibrate_chessboard.py"),
+        os.path.join(HERE, "test_pick_single.py"),
+        os.path.join(HERE, "test_survey_capture.py"),
+        os.path.join(HERE, "test_picker_viewer.py"),
     ]
     fails = 0
     names = []
@@ -182,66 +223,13 @@ def check_offline_tests():
     return True, "all offline tests passed"
 
 
-def check_visual_reference():
-    if not os.path.exists(REF_FRAME) or not os.path.exists(BASELINE):
-        return False, ("reference or baseline missing — follow "
-                        "LAB_RUNBOOK 'Visual reference snapshot' section")
-    if not os.path.exists(REF_TCP):
-        return False, "ref TCP sidecar missing — capture reference first"
-    try:
-        from ugreen_tracker import capture, tcp_from_diff, load_baseline
-        from qarm_driver import QArmDriver
-        import numpy as np
-    except Exception as ex:
-        return False, f"import: {ex}"
-    # Move arm to pickhome1
-    try:
-        with open(os.path.join(REPO, "teach_points.json")) as f:
-            pts = json.load(f)
-        if "pickhome1" not in pts:
-            return False, "pickhome1 missing from teach_points"
-        target = np.array(pts["pickhome1"]["joints_rad"], dtype=float)
-        grip = float(pts["pickhome1"].get("gripper", 0.15))
-        q = QArmDriver(); q.connect(); time.sleep(0.3)
-        for _ in range(5):
-            try: q.read_all(); break
-            except Exception: time.sleep(0.3)
-        try:
-            from calibrate_closed_loop import slow_move_to_joints
-            slow_move_to_joints(q, target, grip)
-        finally:
-            try: q.card.close()
-            except Exception: pass
-            q._connected = False
-        frame = capture()
-        baseline = load_baseline(BASELINE)
-        tcp = tcp_from_diff(frame, baseline)
-        if tcp is None:
-            return False, "no TCP detected at pickhome1"
-        with open(REF_TCP) as f:
-            ref = json.load(f)
-        dx = tcp[0] - ref["tcp"][0]
-        dy = tcp[1] - ref["tcp"][1]
-        d = (dx * dx + dy * dy) ** 0.5
-        # 50 px threshold: tight enough to catch a real pose regression
-        # (arm at wrong teach point) while tolerating image-diff jitter
-        # from morphological edge noise + small WB shifts between the
-        # baseline capture and the live check. At 1280 wide this is 4%
-        # of frame width.
-        ok = d < 50
-        return ok, f"tcp delta = {d:.1f} px (threshold 50)"
-    except Exception as ex:
-        return False, f"{ex}"
-
-
 CHECKS = [
-    ("1 QArm     ", check_qarm,               False),
-    ("2 D415     ", check_d415,               False),
-    ("3 UGreen   ", check_ugreen,             False),
-    ("4 Calib    ", check_calibration,        True),
-    ("5 HSV      ", check_hsv,                False),
-    ("6 Tests    ", check_offline_tests,      True),
-    ("7 VisualRef", check_visual_reference,   False),
+    ("1 QArm       ", check_qarm,                      False),
+    ("2 D415       ", check_d415,                      False),
+    ("3 SessionCal ", check_session_cal,               True),
+    ("4 Chessboard ", check_chessboard_still_visible,  False),
+    ("5 HSV        ", check_hsv,                       False),
+    ("6 Tests      ", check_offline_tests,             True),
 ]
 
 
