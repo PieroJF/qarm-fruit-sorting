@@ -87,6 +87,32 @@ class StepController:
         self._started      = False
 
     # ------------------------------------------------------------------
+    def load_single_pick(self, base_xyz, fruit_type):
+        """
+        Queue a single target for one pick-place cycle, and reset FSM.
+
+        Parity with FruitSortingController.pick_single for sim callers
+        that drive step() themselves (e.g. Simulink facade, test harness).
+        The caller is responsible for pumping step() until the returned
+        `done` flag is True; this helper only sets up state.
+
+        Parameters
+        ----------
+        base_xyz : array_like, shape (3,)
+        fruit_type : str  — one of 'banana' | 'tomato' | 'strawberry'.
+        """
+        self.fruit_queue = [{
+            'pos': np.asarray(base_xyz, dtype=float),
+            'type': str(fruit_type),
+        }]
+        self.state = S_GO_HOME
+        self.t = 0.0
+        self.sorted_count = 0
+        self._started = False
+        self._last_ee = self.HOME_POS.copy()
+        self._last_gripper = 0.0
+
+    # ------------------------------------------------------------------
     def step(self, joints_cur, dt):
         """Advance the FSM one solver tick.
 
