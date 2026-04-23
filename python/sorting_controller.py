@@ -165,6 +165,10 @@ class FruitSortingController:
         dt : float
             Control loop period; same semantics as run_autonomous.
 
+        Blocking; must not be called while another control method
+        (`run_autonomous`, `set_gripper_ramp`, `pick_single`) is already
+        driving the FSM. Resets state to GO_HOME on entry.
+
         Returns
         -------
         bool
@@ -179,6 +183,8 @@ class FruitSortingController:
         }]
         self.state = State.GO_HOME
         self._traj_end_pos = None
+        self._done_logged = False
+        self._ik_warn_fired = False
         self._drive_until_done(dt)
         return self.sorted_count > prior
 

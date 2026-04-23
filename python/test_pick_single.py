@@ -1,5 +1,5 @@
 """Tests for FruitSortingController.pick_single synchronous entry point."""
-import os, sys, time
+import os, sys
 import numpy as np
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
