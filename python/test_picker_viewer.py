@@ -75,10 +75,39 @@ def test_hud_text_contains_counts():
     return name, True, f"'{msg}'"
 
 
+class FakeController:
+    def __init__(self, succeed=True):
+        self.calls = []
+        self._succeed = succeed
+        self.sorted_count = 0
+    def pick_single(self, base_xyz, fruit_type, dt=0.01):
+        self.calls.append((np.asarray(base_xyz).copy(), fruit_type))
+        if self._succeed:
+            self.sorted_count += 1
+            return True
+        return False
+
+
+def test_pick_one_calls_controller():
+    from picker_viewer import _pick_one
+    name = "pick_one_dispatch"
+    det = _mk_det("tomato", 100, 100)
+    det.center_base_m = np.array([0.42, 0.11, 0.04])
+    ctrl = FakeController(succeed=True)
+    ok = _pick_one(ctrl, det)
+    assert ok is True
+    assert len(ctrl.calls) == 1
+    pos, ftype = ctrl.calls[0]
+    assert np.allclose(pos, [0.42, 0.11, 0.04])
+    assert ftype == "tomato"
+    return name, True, "ctrl.pick_single called with det base_m + type"
+
+
 TESTS = [
     test_nearest_within_radius, test_nearest_outside_radius_returns_none,
     test_nearest_empty_list_returns_none, test_filter_by_type,
     test_annotate_returns_image_same_shape, test_hud_text_contains_counts,
+    test_pick_one_calls_controller,
 ]
 
 
