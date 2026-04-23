@@ -121,8 +121,7 @@ class FruitSortingController:
         ----------
         dt : float
             Control loop period (seconds). Default 100 Hz — plenty for
-            trajectory tracking at QArm motion bandwidths. Previous
-            500 Hz default burned CPU without benefit.
+            trajectory tracking at QArm motion bandwidths.
         """
         print("\n=== AUTONOMOUS FRUIT SORTING ===")
         print(f"Fruits to sort: {len(self.fruit_queue)}")
@@ -131,23 +130,57 @@ class FruitSortingController:
 
         self.state = State.GO_HOME
         start_time = time.time()
+        self._drive_until_done(dt)
+        total_time = time.time() - start_time
+        print(f"\n=== SORTING COMPLETE ===")
+        print(f"Sorted {self.sorted_count} fruits in {total_time:.1f} seconds")
 
+    def _drive_until_done(self, dt):
+        """Tight control loop. Pumps _step at `dt` cadence until state==DONE
+        or an exception is caught. Shared between run_autonomous and
+        pick_single."""
         while self.state != State.DONE:
             loop_start = time.time()
             try:
                 self._step(time.time())
             except Exception as ex:
                 print(f"[ERROR] state {self.state.name}: {ex}")
-                print("[ERROR] aborting sort — arm held at last commanded pose")
+                print("[ERROR] aborting — arm held at last commanded pose")
                 break
             elapsed = time.time() - loop_start
             sleep_time = dt - elapsed
             if sleep_time > 0:
                 time.sleep(sleep_time)
 
-        total_time = time.time() - start_time
-        print(f"\n=== SORTING COMPLETE ===")
-        print(f"Sorted {self.sorted_count} fruits in {total_time:.1f} seconds")
+    def pick_single(self, base_xyz, fruit_type, dt=0.01):
+        """
+        Run ONE synchronous pick-place cycle for a single target.
+
+        Parameters
+        ----------
+        base_xyz : array_like, shape (3,)
+            XYZ in robot base frame (metres).
+        fruit_type : str
+            One of 'banana', 'tomato', 'strawberry' — selects the basket.
+        dt : float
+            Control loop period; same semantics as run_autonomous.
+
+        Returns
+        -------
+        bool
+            True if sorted_count increased (pick+place succeeded);
+            False if the target was unreachable or an exception aborted
+            the cycle.
+        """
+        prior = self.sorted_count
+        self.fruit_queue = [{
+            'pos': np.asarray(base_xyz, dtype=float),
+            'type': str(fruit_type),
+        }]
+        self.state = State.GO_HOME
+        self._traj_end_pos = None
+        self._drive_until_done(dt)
+        return self.sorted_count > prior
 
     def _log(self, tag, **kv):
         """Forward an event to the attached TraceLogger if any."""
