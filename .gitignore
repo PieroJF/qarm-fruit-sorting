@@ -18,7 +18,9 @@ venv/
 teach_points.json
 calibration.json
 session_cal.json
+session_cal.json.bak_*
 logs/
+.claude/
 
 # Live camera captures (workspace-specific)
 figures/live_*.png
