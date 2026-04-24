@@ -73,8 +73,21 @@ def _grid_with_ordering(origin_base, flip_i, flip_j,
     if tr_base is not None and bl_base is not None:
         tr = np.asarray(tr_base, dtype=np.float64)
         bl = np.asarray(bl_base, dtype=np.float64)
-        i_step = (tr - tl) / (cols - 1)   # 1 square along the +i edge
-        j_step = (bl - tl) / (rows - 1)   # 1 square along the +j edge
+        # Use the DIRECTIONS from the 3-corner touches (accurate to ~1 deg
+        # even with sloppy jogging) but keep the NOMINAL square spacing
+        # (30 mm). Measured TL->TR / TL->BL distances usually have
+        # 5-10 mm jog noise, which would otherwise contaminate the 3D grid
+        # and blow up solvePnP RMS to double-digit pixels.
+        i_dir = (tr - tl) / np.linalg.norm(tr - tl)
+        j_dir_raw = (bl - tl) / np.linalg.norm(bl - tl)
+        # Gram-Schmidt: make j_dir exactly orthogonal to i_dir
+        j_dir = j_dir_raw - np.dot(j_dir_raw, i_dir) * i_dir
+        j_dir_len = np.linalg.norm(j_dir)
+        if j_dir_len < 1e-6:
+            raise ValueError("TL/TR/BL are nearly collinear; re-jog.")
+        j_dir /= j_dir_len
+        i_step = i_dir * square_mm / 1000.0
+        j_step = j_dir * square_mm / 1000.0
     else:
         i_step = np.array([square_mm / 1000.0, 0.0, 0.0])
         j_step = np.array([0.0, square_mm / 1000.0, 0.0])
