@@ -75,6 +75,7 @@ def test_controller_full_cycle_pick_only():
     c.T_PICK = 0.05
     c.T_DWELL = 0.02
     c.T_GRIP = 0.02
+    c.T_SETTLE = 0.02
     # Two reachable fruits at distinct Z values
     positions = [np.array([0.35, 0.10, 0.13]),
                  np.array([0.30, -0.05, 0.08])]
@@ -108,7 +109,7 @@ def test_controller_skips_unreachable():
     q = MockQArm()
     c = FruitSortingController(q, pick_only=True)
     c.T_TRANSIT = 0.05; c.T_APPROACH = 0.05; c.T_PICK = 0.05
-    c.T_DWELL = 0.02; c.T_GRIP = 0.02
+    c.T_DWELL = 0.02; c.T_GRIP = 0.02; c.T_SETTLE = 0.02
     # First fruit is far outside workspace (>1 m), second is reachable
     c.set_fruit_positions(
         [np.array([2.0, 0.0, 0.5]), np.array([0.35, 0.1, 0.13])],
@@ -135,7 +136,7 @@ def test_controller_full_sort_mode():
     q = MockQArm()
     c = FruitSortingController(q, pick_only=False)
     c.T_TRANSIT = 0.05; c.T_APPROACH = 0.05; c.T_PICK = 0.05
-    c.T_DWELL = 0.02; c.T_GRIP = 0.02
+    c.T_DWELL = 0.02; c.T_GRIP = 0.02; c.T_SETTLE = 0.02
     # Override baskets to reachable positions
     c.BASKETS = {
         'strawberry': np.array([0.30, -0.15, 0.10]),
@@ -322,7 +323,7 @@ def test_sorting_controller_emits_trace_events():
     q = MockQArm()
     c = FruitSortingController(q, pick_only=True, logger=logger)
     c.T_TRANSIT = 0.02; c.T_APPROACH = 0.02; c.T_PICK = 0.02
-    c.T_DWELL = 0.01; c.T_GRIP = 0.01
+    c.T_DWELL = 0.01; c.T_GRIP = 0.01; c.T_SETTLE = 0.01
     c.set_fruit_positions([[0.35, 0.10, 0.13]], ["strawberry"])
     c.state = State.GO_HOME
     for _ in range(3000):

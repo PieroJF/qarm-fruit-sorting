@@ -51,14 +51,27 @@ class FruitSortingController:
     APPROACH_Z = 0.15
     PICK_Z = 0.02          # absolute floor — never go below this
     PICK_OFFSET = 0.02     # subtract from fruit_z when computing pick height
+                           # 2026-04-23 briefly tried 0.04 but FSM's Cartesian
+                           # quintic stalls in singular joint space at low z;
+                           # 0.02 was the value diag_pick_one used successfully.
     PLACE_Z = 0.10
 
     # Timing
     T_TRANSIT = 2.0
-    T_APPROACH = 1.0
-    T_PICK = 0.8
+    T_APPROACH = 1.5       # raised 2026-04-23 from 1.0
+    T_PICK = 2.5           # raised 2026-04-23 from 0.8: 12 cm descent
+                           # in 0.8 s saturated the arm's velocity and the
+                           # FSM moved to CLOSE_GRIPPER while arm was still
+                           # ~12 cm above target, closing on air. Matches
+                           # diag_pick_one's slow_move_to_joints seconds=3.0.
     T_DWELL = 0.5
     T_GRIP = 0.8           # gripper open/close interpolation time
+    T_SETTLE = 1.0         # added 2026-04-23: keep commanding target after
+                           # interp ends so arm actually reaches it (arm has
+                           # ~0.5-1.0 s tracking lag; without settle the FSM
+                           # hands off to the next state while arm is still
+                           # short of target, e.g. DESCEND -> CLOSE_GRIPPER
+                           # while gripper is 10 cm above fruit).
 
     def __init__(self, qarm, camera=None, pick_only=False, logger=None):
         """
@@ -88,6 +101,8 @@ class FruitSortingController:
         self._traj_duration = 0
         self._traj_start_pos = None
         self._traj_end_pos = None
+        self._traj_start_joints = None   # joint-space interp (2026-04-23)
+        self._traj_target_joints = None  # set by _start_move via IK
         # Gripper interpolation state — avoids -1289 overload stalls by
         # ramping the command and reading back the settled position after
         # the close, so we never keep torque against a stalled jaw.
@@ -356,28 +371,60 @@ class FruitSortingController:
                 self._print_state("Returning home")
 
     def _start_move(self, start, end, duration):
-        """Set up a new trajectory."""
+        """Set up a new trajectory.
+
+        2026-04-23 refactor: interpolate in JOINT space (not Cartesian).
+        A straight line in Cartesian can pass through singular regions or
+        trigger IK solution-branch flips, causing _execute_position to
+        fail silently and the arm to stall mid-descent. `slow_move_to_joints`
+        uses joint-space linear interp and is field-proven; mirror it here.
+        IK is evaluated ONCE at the endpoint.
+        """
         self._traj_start = time.time()
         self._traj_duration = duration
-        self._traj_start_pos = start.copy()
+        self._traj_start_pos = start.copy() if start is not None else None
         self._traj_end_pos = end.copy()
+        # Pre-compute target joints; _ik_safe returns None if unreachable.
+        target_joints = self._ik_safe(end)
+        self._traj_target_joints = (None if target_joints is None
+                                      else np.asarray(target_joints, dtype=float))
+        start_joints, _ = self.qarm.read_all()
+        self._traj_start_joints = np.asarray(start_joints, dtype=float).copy()
 
     def _move_complete(self, t):
         """Check if current trajectory is complete."""
         return (time.time() - self._traj_start) >= self._traj_duration
 
     def _track_trajectory(self, t, gripper_val):
-        """Track current trajectory and return True when done."""
-        elapsed = time.time() - self._traj_start
-        if elapsed >= self._traj_duration:
-            self._execute_position(self._traj_end_pos, gripper_val)
-            return True
+        """Joint-space smoothstep interp followed by a settle phase that
+        holds the target for T_SETTLE seconds. The settle matches
+        slow_move_to_joints' trailing hammer-loop — without it the arm is
+        handed off to CLOSE_GRIPPER while still lagging the final setpoint
+        (position-mode PID has ~0.5-1.0 s tracking lag on big descents).
 
-        pos = quintic_trajectory(
-            self._traj_start_pos, self._traj_end_pos,
-            self._traj_duration, elapsed
-        )
-        self._execute_position(pos, gripper_val)
+        If target joints weren't solvable, hold last pose and return True
+        so the FSM advances rather than spinning forever. Upstream callers
+        should have pre-validated reachability via _ik_safe.
+        """
+        if self._traj_target_joints is None:
+            return True
+        elapsed = time.time() - self._traj_start
+        total = self._traj_duration + self.T_SETTLE
+        if elapsed >= total:
+            self.qarm.set_joints_and_gripper(
+                self._traj_target_joints, gripper_val)
+            return True
+        if elapsed >= self._traj_duration:
+            # Settle phase: keep commanding target so arm physically reaches it.
+            self.qarm.set_joints_and_gripper(
+                self._traj_target_joints, gripper_val)
+            return False
+        s = elapsed / self._traj_duration
+        # smoothstep: zero velocity at both endpoints.
+        s = 3.0 * s * s - 2.0 * s * s * s
+        joints = (self._traj_start_joints
+                  + s * (self._traj_target_joints - self._traj_start_joints))
+        self.qarm.set_joints_and_gripper(joints, gripper_val)
         return False
 
     def _compute_pick_z(self, fruit_xyz):

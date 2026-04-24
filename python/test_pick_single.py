@@ -12,7 +12,7 @@ from test_integration import MockQArm
 
 def _compressed(c):
     c.T_TRANSIT = 0.05; c.T_APPROACH = 0.05; c.T_PICK = 0.05
-    c.T_DWELL = 0.02; c.T_GRIP = 0.02
+    c.T_DWELL = 0.02; c.T_GRIP = 0.02; c.T_SETTLE = 0.02
     return c
 
 
