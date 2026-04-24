@@ -54,24 +54,38 @@ def _chess_world_pts() -> np.ndarray:
 
 def _grid_with_ordering(origin_base, flip_i, flip_j,
                         rows=_INNER_ROWS, cols=_INNER_COLS,
-                        square_mm=_SQUARE_MM):
+                        square_mm=_SQUARE_MM,
+                        tr_base=None, bl_base=None):
     """Build a (N, 3) float32 chessboard grid in base frame, with corners
     ordered as if OpenCV's findChessboardCorners index-0 were one of the
     four physical corners. flip_i=True means OpenCV scanned columns
     right-to-left w.r.t. our touched origin; flip_j=True means it scanned
     rows bottom-to-top. The 4 (flip_i, flip_j) combinations cover all
-    possible OpenCV orientations for a non-square chessboard."""
+    possible OpenCV orientations for a non-square chessboard.
+
+    If tr_base and bl_base are provided (kinematic positions of the board's
+    top-right and bottom-left inner corners, touched with TCP), the grid
+    is built along the REAL in-plane axes derived from those 3 corners.
+    Without them, the grid assumes +i is kinematic +x and +j is kinematic
+    +y (board laid axis-aligned) — which is only correct if the board is
+    actually placed that way."""
+    tl = np.asarray(origin_base, dtype=np.float64)
+    if tr_base is not None and bl_base is not None:
+        tr = np.asarray(tr_base, dtype=np.float64)
+        bl = np.asarray(bl_base, dtype=np.float64)
+        i_step = (tr - tl) / (cols - 1)   # 1 square along the +i edge
+        j_step = (bl - tl) / (rows - 1)   # 1 square along the +j edge
+    else:
+        i_step = np.array([square_mm / 1000.0, 0.0, 0.0])
+        j_step = np.array([0.0, square_mm / 1000.0, 0.0])
     pts = np.zeros((rows * cols, 3), dtype=np.float32)
     k = 0
     for j_img in range(rows):
         for i_img in range(cols):
             i_phys = (cols - 1 - i_img) if flip_i else i_img
             j_phys = (rows - 1 - j_img) if flip_j else j_img
-            pts[k] = [
-                float(origin_base[0]) + i_phys * square_mm / 1000.0,
-                float(origin_base[1]) + j_phys * square_mm / 1000.0,
-                float(origin_base[2]),
-            ]
+            pt = tl + i_phys * i_step + j_phys * j_step
+            pts[k] = pt.astype(np.float32)
             k += 1
     return pts
 
@@ -99,6 +113,8 @@ def run_calibration_core(
     captured_frame: np.ndarray,
     d415_intrinsics: dict,
     out_path: str,
+    tr_tcp: np.ndarray | None = None,
+    bl_tcp: np.ndarray | None = None,
 ) -> SessionCal:
     """Given inputs from the interactive CLI (or tests), solve the
     homography, derive camera height, build a SessionCal, and save it."""
@@ -167,8 +183,14 @@ def run_calibration_core(
 
     best = None   # (R_cam, C_cam, rms, name)
     candidates_log = []   # list of (name, summary_str)
+    using_three_corners = (tr_tcp is not None and bl_tcp is not None)
+    if using_three_corners:
+        print("  [grid] using 3-corner touched geometry (non-axis-aligned)")
+    else:
+        print("  [grid] assuming board is axis-aligned (no TR/BL touches)")
     for name, flip_i, flip_j in orientations:
-        grid = _grid_with_ordering(origin_base, flip_i, flip_j)
+        grid = _grid_with_ordering(origin_base, flip_i, flip_j,
+                                    tr_base=tr_tcp, bl_base=bl_tcp)
         try:
             R_c, C_c, rms_c = solve_survey1_extrinsics(
                 corners_2d=image_pts.astype(np.float32),
@@ -261,10 +283,28 @@ def main(argv=None):
     # camera/framing issues doesn't require re-jogging every time.
     touch_cache = os.path.join(os.path.dirname(_HERE), "logs",
                                 "last_touched_tcp.json")
+    three_corners_cache = os.path.join(os.path.dirname(_HERE), "logs",
+                                         "chess_touched_corners.json")
+
+    tr_tcp = None
+    bl_tcp = None
 
     try:
         # --- Phase 1: origin registration
-        if args.no_touch:
+        # Preferred source: logs/chess_touched_corners.json written by
+        # touch_three_corners.py. It gives us the true in-plane board
+        # orientation so solvePnP isn't forced to assume axis-aligned.
+        if os.path.exists(three_corners_cache):
+            with open(three_corners_cache) as f:
+                cj = json.load(f)
+            touched_tcp = np.asarray(cj["TL_base_m"], dtype=float)
+            tr_tcp = np.asarray(cj["TR_base_m"], dtype=float)
+            bl_tcp = np.asarray(cj["BL_base_m"], dtype=float)
+            print(f"  [3-corner] reusing TL/TR/BL from {three_corners_cache}")
+            print(f"    TL = {touched_tcp.round(4).tolist()}")
+            print(f"    TR = {tr_tcp.round(4).tolist()}")
+            print(f"    BL = {bl_tcp.round(4).tolist()}")
+        elif args.no_touch:
             # Priority: session_cal.json -> touch cache -> fail
             if os.path.exists(args.out):
                 prior = SessionCal.load(args.out)
@@ -294,6 +334,8 @@ def main(argv=None):
                       f"(reuse via --no-touch)")
             except Exception as ex:
                 print(f"  [warn] could not cache touched_tcp: {ex}")
+            print("  [note] for non-axis-aligned chessboards, run "
+                   "touch_three_corners.py first to capture TR + BL.")
 
         # --- Phase 2: homography capture
         tp_path = os.path.join(os.path.dirname(_HERE), "teach_points.json")
@@ -353,6 +395,8 @@ def main(argv=None):
             captured_frame=captured,
             d415_intrinsics=intr,
             out_path=args.out,
+            tr_tcp=tr_tcp,
+            bl_tcp=bl_tcp,
         )
     finally:
         try: driver.card.close()

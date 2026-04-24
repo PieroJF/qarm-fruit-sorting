@@ -82,26 +82,28 @@ def main():
     dot = float(np.dot(i_axis, j_axis))
     print(f"  +i dot +j = {dot:.4f}  (should be ~0 if corners are orthogonal)")
 
-    print("\n=== UPDATE session_cal.json ===")
-    print("If TL, TR, BL above look right AND the distances match, you can")
-    print("inject them into session_cal as an override so solvePnP gets a")
-    print("correctly-oriented 3D grid. Reply 'y' to inject, anything else to skip:")
-    ans = input("> ").strip().lower()
-    if ans == "y":
-        session_cal_path = os.path.join(os.path.dirname(_HERE),
-                                          "session_cal.json")
-        with open(session_cal_path, "r") as f:
-            cal = json.load(f)
-        cal["chess_touched_corners"] = {
+    # Always persist to logs/chess_touched_corners.json. calibrate_chessboard.py
+    # picks this up at Phase 1 and uses it to construct a correctly-oriented
+    # 3D grid (bypassing the axis-aligned assumption).
+    out_path = os.path.join(os.path.dirname(_HERE), "logs",
+                              "chess_touched_corners.json")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "w") as f:
+        json.dump({
             "TL_base_m": tl.tolist(),
             "TR_base_m": tr.tolist(),
             "BL_base_m": bl.tolist(),
-        }
-        with open(session_cal_path, "w") as f:
-            json.dump(cal, f, indent=2)
-        print(f"  wrote chess_touched_corners to {session_cal_path}")
-    else:
-        print("  skipped.")
+            "inner_cols": _INNER_COLS,
+            "inner_rows": _INNER_ROWS,
+            "square_mm": _SQUARE_MM,
+            "i_axis_in_base": i_axis.tolist(),
+            "j_axis_in_base": j_axis.tolist(),
+            "board_rotation_deg": float(np.degrees(theta_rad)),
+        }, f, indent=2)
+    print(f"\nwrote {out_path}")
+    print("Now run: py -3.13 python/calibrate_chessboard.py --no-touch")
+    print("(the --no-touch flag makes it reuse these 3 corners instead of "
+          "prompting again)")
 
 
 if __name__ == "__main__":
