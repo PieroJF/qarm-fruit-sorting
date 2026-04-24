@@ -300,11 +300,16 @@ def pixel_to_base_frame(center_px: tuple, fruit_top_z_mm: float,
                          session_cal) -> np.ndarray:
     """Convert (pixel, fruit_top_z_mm) to base-frame XYZ (metres).
 
+    `fruit_top_z_mm` is measured ABOVE THE TABLE SURFACE (not in the
+    robot base frame) — i.e. the target plane in base frame is
+    `z_base = chess_origin_in_base_m[2] + fruit_top_z_mm / 1000`.
+    This convention is shared with `_resolve_top_z` / `_FRUIT_TOP_Z_MM`.
+
     Uses the per-session camera extrinsics recovered at survey1 by
     cv2.solvePnP (see calibrate_extrinsics.solve_survey1_extrinsics).
     Back-projects the pixel into a camera-frame ray, transforms the ray
     into base frame using session_cal.cam_extrinsics_survey1, and
-    intersects it with the plane z_base = fruit_top_z_mm / 1000.
+    intersects it with the target plane above.
     """
     extr = session_cal.cam_extrinsics_survey1
     if not extr:
@@ -324,6 +329,7 @@ def pixel_to_base_frame(center_px: tuple, fruit_top_z_mm: float,
     C = np.asarray(extr["C_cam_in_base_m"], dtype=np.float64)
     ray_base = R_cam_in_base @ ray_cam
 
+    # fruit_top_z_mm is height above table surface; offset into base frame.
     origin_z = float(session_cal.chess_origin_in_base_m[2])
     target_z = origin_z + float(fruit_top_z_mm) / 1000.0
     if abs(ray_base[2]) < 1e-6:

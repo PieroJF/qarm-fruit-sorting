@@ -23,10 +23,9 @@ def _nadir_extrinsics(height_m: float = 0.30, origin_m=(0.30, 0.0, 0.0)):
     detector tests close to their old nadir-pinhole behaviour while still
     exercising the new ray-plane pipeline.
 
-    R rotates camera frame (+Z looking into scene) so camera optical axis
-    points in the -Z_base direction, i.e. straight down.
+    R maps camera +Z (OpenCV convention: optical axis into scene) to
+    base -Z (down toward the table).
     """
-    import numpy as np
     R = np.array([[1.0, 0.0, 0.0],
                   [0.0, -1.0, 0.0],
                   [0.0, 0.0, -1.0]], dtype=np.float64)
