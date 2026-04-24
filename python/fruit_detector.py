@@ -349,7 +349,7 @@ CONFIDENCE_MIN = 0.35
 # back to these defaults gives stable base-Z for picking.
 _FRUIT_TOP_Z_MM = {
     "banana": 25,
-    "tomato": 50,
+    "tomato": 55,     # 2026-04-24: measured ~5.5 cm on the lab tomato
     "strawberry": 25,
 }
 
