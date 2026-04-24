@@ -26,8 +26,12 @@ _WARN_RESIDUAL_MM = 3.0
 _ERROR_RESIDUAL_MM = 10.0
 
 _SETTLE_SLEEP_S = 1.5           # canonical production dwell; do not reassign
-_SETTLE_JOINT_TOL_RAD = 0.05    # joint-norm L2 tolerance (~2.9° on one
-                                # joint, ~1.4° evenly spread across four)
+_SETTLE_JOINT_TOL_RAD = 0.015   # tightened 2026-04-24: 0.05 rad allowed
+                                # TCP drift up to ~20 mm, enough to push
+                                # chessboard residual past its 10 mm gate
+                                # after a pick-and-place cycle. 0.015 rad
+                                # joint-norm corresponds to ~6 mm TCP
+                                # drift, matching the target pick accuracy.
 # Runtime uses `_settle_sleep_s` so tests can monkeypatch it to 0.01.
 _settle_sleep_s = _SETTLE_SLEEP_S
 
