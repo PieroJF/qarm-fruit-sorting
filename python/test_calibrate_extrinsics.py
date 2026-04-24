@@ -73,6 +73,7 @@ def test_solve_recovers_pose_within_tolerance():
         corners_2d=corners_2d.astype(np.float32),
         corners_3d_base=corners_3d.astype(np.float32),
         K=K, dist_coeffs=dist,
+        chess_origin_z_in_base=float(origin[2]),   # <-- add this
     )
 
     # Reprojection residual should be tiny on noise-free synthetic data
@@ -83,3 +84,68 @@ def test_solve_recovers_pose_within_tolerance():
     for k in range(3):
         cos_err = np.dot(R_rec[:, k], R_cam_in_base[:, k])
         assert cos_err > np.cos(np.deg2rad(0.5))
+
+
+def test_solve_picks_above_plane_when_iterative_would_pick_below():
+    """Planar-target ambiguity regression test.
+
+    If the caller stands `chess_origin_in_base_m` at a non-zero Z (so "the
+    plane" is elevated above base z=0) and the camera is above it, the
+    correct solvePnP solution has C[2] > origin[2]. The mirror-through-
+    the-plane solution has C[2] < origin[2]. This test synthesises a
+    case where ITERATIVE tends to converge to the mirror solution and
+    confirms our IPPE-based wrapper picks the above-plane solution.
+    """
+    import numpy as np
+    from calibrate_extrinsics import solve_survey1_extrinsics
+
+    K = np.array([
+        [912.0,   0.0, 635.0],
+        [  0.0, 911.0, 343.0],
+        [  0.0,   0.0,   1.0],
+    ], dtype=np.float64)
+    dist = np.zeros(5, dtype=np.float64)
+
+    # Matches the lab case: chessboard origin elevated ~2 cm off the base
+    # z=0 plane.
+    origin = np.array([0.527, 0.108, 0.023])
+    # Build the 7x5 grid in base frame.
+    pts3d = []
+    for j in range(5):
+        for i in range(7):
+            pts3d.append([
+                origin[0] + i * 0.030,
+                origin[1] + j * 0.030,
+                origin[2],
+            ])
+    corners_3d = np.asarray(pts3d, dtype=np.float64)
+
+    # Known camera pose: offset to the side (like lab) and tilted ~30° forward.
+    tilt = np.deg2rad(30.0)
+    R_cam_in_base = np.array([
+        [1.0, 0.0, 0.0],
+        [0.0, np.cos(np.pi + tilt), -np.sin(np.pi + tilt)],
+        [0.0, np.sin(np.pi + tilt),  np.cos(np.pi + tilt)],
+    ])
+    C_cam_in_base = np.array([0.587, 0.300, 0.255])  # camera ABOVE chessboard
+
+    # Project to pixels.
+    R_base_to_cam = R_cam_in_base.T
+    pts_cam = (R_base_to_cam @ (corners_3d.T - C_cam_in_base.reshape(3, 1))).T
+    u = K[0, 0] * pts_cam[:, 0] / pts_cam[:, 2] + K[0, 2]
+    v = K[1, 1] * pts_cam[:, 1] / pts_cam[:, 2] + K[1, 2]
+    corners_2d = np.stack([u, v], axis=1).astype(np.float32)
+
+    R_rec, C_rec, rms = solve_survey1_extrinsics(
+        corners_2d=corners_2d,
+        corners_3d_base=corners_3d.astype(np.float32),
+        K=K, dist_coeffs=dist,
+        chess_origin_z_in_base=float(origin[2]),
+    )
+    # Camera must be recovered ABOVE the chessboard plane.
+    assert C_rec[2] > origin[2], (
+        f"solver picked mirror solution: C_rec={C_rec}, origin_z={origin[2]}"
+    )
+    # And close to the true pose.
+    np.testing.assert_allclose(C_rec, C_cam_in_base, atol=2e-3)
+    assert rms < 0.1

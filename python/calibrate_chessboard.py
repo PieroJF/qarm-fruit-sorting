@@ -139,6 +139,7 @@ def run_calibration_core(
             corners_3d_base=corners_3d_base,
             K=K_matrix,
             dist_coeffs=dist_coeffs,
+            chess_origin_z_in_base=float(origin_base[2]),
         )
         print(f"  solvePnP: RMS = {pnp_rms:.2f} px, "
               f"camera at base XYZ = {C_cam.round(3).tolist()} m")
