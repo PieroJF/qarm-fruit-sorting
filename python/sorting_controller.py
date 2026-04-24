@@ -192,8 +192,14 @@ class FruitSortingController:
             the cycle.
         """
         prior = self.sorted_count
+        # Empirical +5 cm in-base-frame x offset applied at pick time to
+        # compensate for the residual projection bias observed in lab
+        # (2026-04-24). Detection position is unchanged on screen, only
+        # the arm target shifts.
+        pick_target = np.asarray(base_xyz, dtype=float).copy()
+        pick_target[0] += 0.05
         self.fruit_queue = [{
-            'pos': np.asarray(base_xyz, dtype=float),
+            'pos': pick_target,
             'type': str(fruit_type),
         }]
         self.state = State.GO_HOME
