@@ -155,8 +155,18 @@ def run_calibration_core(
         ("180° rotation",           True,  True),
     ]
 
+    # Physical sanity constraint: camera is wrist-mounted, so at survey1
+    # the solved camera centre must be within ~25 cm of the TCP (computed
+    # from survey joints via FK). Orientations that pass IPPE's RMS + above-
+    # plane gates can still be spurious (rectangular 7x5 pattern has residual
+    # symmetries that give low RMS for wrong correspondences); this gate
+    # rules them out using hardware geometry.
+    from qarm_kinematics import forward_kinematics as _fk
+    tcp_survey, _ = _fk(np.asarray(survey_joints, dtype=float))
+    _MAX_CAM_TCP_DIST_M = 0.25
+
     best = None   # (R_cam, C_cam, rms, name)
-    rejections = []
+    candidates_log = []   # list of (name, summary_str)
     for name, flip_i, flip_j in orientations:
         grid = _grid_with_ordering(origin_base, flip_i, flip_j)
         try:
@@ -168,20 +178,32 @@ def run_calibration_core(
                 chess_origin_z_in_base=float(origin_base[2]),
             )
         except RuntimeError as ex:
-            rejections.append(f"    {name}: {ex}")
+            candidates_log.append(f"    {name}: REJECTED ({ex})")
             continue
+        tcp_dist = float(np.linalg.norm(C_c - np.asarray(tcp_survey)))
+        summary = (f"C={C_c.round(3).tolist()}, RMS={rms_c:.2f}px, "
+                    f"||C-TCP||={tcp_dist*100:.1f}cm")
+        if tcp_dist > _MAX_CAM_TCP_DIST_M:
+            candidates_log.append(
+                f"    {name}: REJECTED (cam {tcp_dist*100:.1f}cm from "
+                f"TCP > {_MAX_CAM_TCP_DIST_M*100:.0f}cm wrist bound); "
+                f"{summary}")
+            continue
+        candidates_log.append(f"    {name}: OK; {summary}")
         if best is None or rms_c < best[2]:
             best = (R_c, C_c, rms_c, name)
 
+    print("  solvePnP 4-orientation sweep:")
+    for line in candidates_log:
+        print(line)
+
     if best is None:
-        print("  solvePnP REJECTED (all 4 orientations failed):")
-        for r in rejections:
-            print(r)
+        print("  solvePnP REJECTED: no orientation passes all gates")
         cam_extrinsics_survey1 = None
     else:
         R_cam, C_cam, pnp_rms, chosen = best
-        print(f"  solvePnP: orientation={chosen}, RMS={pnp_rms:.2f} px, "
-              f"camera at base XYZ={C_cam.round(3).tolist()} m")
+        print(f"  solvePnP: chosen orientation={chosen}, RMS={pnp_rms:.2f} "
+              f"px, camera at base XYZ={C_cam.round(3).tolist()} m")
         cam_extrinsics_survey1 = {
             "R_cam_in_base": R_cam.tolist(),
             "C_cam_in_base_m": C_cam.tolist(),
