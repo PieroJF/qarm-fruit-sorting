@@ -422,6 +422,110 @@ def test_detect_fruits_empty_scene():
     assert dets == []
 
 
+def test_pixel_to_base_frame_uses_extrinsics_when_present():
+    """With known extrinsics (camera directly above chess origin at 0.3 m,
+    nadir), pixel = principal point + 0 should land at chess origin XY,
+    and z should match fruit_top_z."""
+    import numpy as np
+    from session_cal import SessionCal
+    from fruit_detector import pixel_to_base_frame
+
+    K = {"fx": 380.0, "fy": 380.0, "cx": 320.0, "cy": 240.0}
+    origin = np.array([0.30, 0.00, 0.00])
+    R_cam_in_base = np.array([
+        [1.0,  0.0,  0.0],
+        [0.0, -1.0,  0.0],
+        [0.0,  0.0, -1.0],
+    ])  # camera looking down (+Z_cam = -Z_base)
+    C_cam_in_base = np.array([0.30, 0.00, 0.30])
+
+    cal = SessionCal(
+        timestamp="t",
+        chess_origin_in_base_m=origin,
+        h_pixel_to_chess_mm=np.eye(3),
+        survey_pose_joints_rad=np.zeros(4),
+        chess_pattern={"cols": 7, "rows": 5, "square_mm": 30.0},
+        d415_intrinsics=K,
+        homography_reproj_rms_px=0.5,
+        camera_height_above_table_m=0.30,
+        image_size=(640, 480),
+        cam_extrinsics_survey1={
+            "R_cam_in_base": R_cam_in_base.tolist(),
+            "C_cam_in_base_m": C_cam_in_base.tolist(),
+            "reproj_rms_px": 0.1,
+        },
+    )
+    # Pixel on the optical axis, fruit top 50 mm above the table.
+    xyz = pixel_to_base_frame((320, 240), fruit_top_z_mm=50.0, session_cal=cal)
+    np.testing.assert_allclose(xyz[:2], origin[:2], atol=1e-4)
+    np.testing.assert_allclose(xyz[2], 0.050, atol=1e-4)
+
+
+def test_pixel_to_base_frame_raises_when_extrinsics_missing():
+    """Without extrinsics, projection must fail loudly; we will not
+    silently fall back to the old nadir-pinhole formula."""
+    import numpy as np
+    import pytest
+    from session_cal import SessionCal
+    from fruit_detector import pixel_to_base_frame
+    cal = SessionCal(
+        timestamp="t",
+        chess_origin_in_base_m=np.zeros(3),
+        h_pixel_to_chess_mm=np.eye(3),
+        survey_pose_joints_rad=np.zeros(4),
+        chess_pattern={"cols": 7, "rows": 5, "square_mm": 30.0},
+        d415_intrinsics={"fx": 380.0, "fy": 380.0, "cx": 320.0, "cy": 240.0},
+        homography_reproj_rms_px=0.5,
+        camera_height_above_table_m=0.30,
+        image_size=(640, 480),
+    )
+    with pytest.raises(ValueError):
+        pixel_to_base_frame((320, 240), 50.0, cal)
+
+
+def test_pixel_to_base_frame_offset_camera():
+    """Non-nadir camera (5 cm lateral offset, 15° forward tilt) still
+    projects a central pixel to a deterministic base point — verifies
+    ray-plane math, not homography."""
+    import numpy as np
+    from session_cal import SessionCal
+    from fruit_detector import pixel_to_base_frame
+
+    K = {"fx": 380.0, "fy": 380.0, "cx": 320.0, "cy": 240.0}
+    tilt = np.deg2rad(15.0)
+    R_cam_in_base = np.array([
+        [1.0, 0.0, 0.0],
+        [0.0, np.cos(np.pi + tilt), -np.sin(np.pi + tilt)],
+        [0.0, np.sin(np.pi + tilt),  np.cos(np.pi + tilt)],
+    ])
+    C_cam_in_base = np.array([0.40, 0.05, 0.33])
+
+    cal = SessionCal(
+        timestamp="t",
+        chess_origin_in_base_m=np.array([0.30, 0.00, 0.00]),
+        h_pixel_to_chess_mm=np.eye(3),
+        survey_pose_joints_rad=np.zeros(4),
+        chess_pattern={"cols": 7, "rows": 5, "square_mm": 30.0},
+        d415_intrinsics=K,
+        homography_reproj_rms_px=0.5,
+        camera_height_above_table_m=0.33,
+        image_size=(640, 480),
+        cam_extrinsics_survey1={
+            "R_cam_in_base": R_cam_in_base.tolist(),
+            "C_cam_in_base_m": C_cam_in_base.tolist(),
+            "reproj_rms_px": 0.1,
+        },
+    )
+    # Sanity: same pixel at different fruit heights must produce same XY
+    # for a nadir camera, but DIFFERENT XY for this tilted camera. We only
+    # check that the result is finite and finite.
+    xyz_low  = pixel_to_base_frame((320, 240), 10.0, cal)
+    xyz_high = pixel_to_base_frame((320, 240), 80.0, cal)
+    assert np.all(np.isfinite(xyz_low))
+    assert np.all(np.isfinite(xyz_high))
+    assert not np.allclose(xyz_low[:2], xyz_high[:2])
+
+
 if __name__ == "__main__":
     _section("B1 Detection fields", test_detection_fields)
     _section("B1 Detection to_dict", test_detection_to_dict)

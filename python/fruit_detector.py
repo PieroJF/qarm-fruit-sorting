@@ -298,39 +298,39 @@ def sample_depth_at_pixel(depth_mm: np.ndarray, center_px: tuple,
 
 def pixel_to_base_frame(center_px: tuple, fruit_top_z_mm: float,
                          session_cal) -> np.ndarray:
-    """
-    Convert a pixel + fruit-top height into a 3-vector XYZ in the robot
-    base frame (metres).
+    """Convert (pixel, fruit_top_z_mm) to base-frame XYZ (metres).
 
-    Applies a nadir-pinhole parallax correction so the returned XY is the
-    fruit's BASE on the table (not the projection of its top). Then uses
-    H_pixel_to_chess_mm to get chess-frame XY in mm and adds the stored
-    chess origin to land in base frame.
-
-    Assumes the camera is approximately nadir at session_cal.camera_height_above_table_m
-    above the table. Error is <2% nadir, <15% at 30 deg tilt.
+    Uses the per-session camera extrinsics recovered at survey1 by
+    cv2.solvePnP (see calibrate_extrinsics.solve_survey1_extrinsics).
+    Back-projects the pixel into a camera-frame ray, transforms the ray
+    into base frame using session_cal.cam_extrinsics_survey1, and
+    intersects it with the plane z_base = fruit_top_z_mm / 1000.
     """
+    extr = session_cal.cam_extrinsics_survey1
+    if not extr:
+        raise ValueError(
+            "session_cal.cam_extrinsics_survey1 is missing — "
+            "rerun calibrate_chessboard.py to solvePnP the survey pose")
     intr = session_cal.d415_intrinsics
+    fx, fy = float(intr["fx"]), float(intr["fy"])
     cx_p, cy_p = float(intr["cx"]), float(intr["cy"])
-    h_mm = float(session_cal.camera_height_above_table_m) * 1000.0
     u, v = float(center_px[0]), float(center_px[1])
-    if h_mm <= 0:
-        raise ValueError("camera height must be positive")
-    z = float(fruit_top_z_mm)
-    u_base = cx_p + (u - cx_p) * (h_mm - z) / h_mm
-    v_base = cy_p + (v - cy_p) * (h_mm - z) / h_mm
-    H = np.asarray(session_cal.h_pixel_to_chess_mm, dtype=np.float64)
-    pt = np.array([u_base, v_base, 1.0])
-    w = H @ pt
-    if abs(w[2]) < 1e-9:
-        raise ValueError("homography degenerate at this pixel")
-    chess_x_mm = w[0] / w[2]
-    chess_y_mm = w[1] / w[2]
-    origin = np.asarray(session_cal.chess_origin_in_base_m, dtype=float)
-    x = origin[0] + chess_x_mm / 1000.0
-    y = origin[1] + chess_y_mm / 1000.0
-    z_base = origin[2] + z / 1000.0
-    return np.array([x, y, z_base], dtype=float)
+
+    ray_cam = np.array([(u - cx_p) / fx, (v - cy_p) / fy, 1.0],
+                        dtype=np.float64)
+    ray_cam /= np.linalg.norm(ray_cam)
+
+    R_cam_in_base = np.asarray(extr["R_cam_in_base"], dtype=np.float64)
+    C = np.asarray(extr["C_cam_in_base_m"], dtype=np.float64)
+    ray_base = R_cam_in_base @ ray_cam
+
+    target_z = float(fruit_top_z_mm) / 1000.0
+    if abs(ray_base[2]) < 1e-6:
+        raise ValueError("ray is parallel to table plane; no intersection")
+    lam = (target_z - C[2]) / ray_base[2]
+    if lam <= 0:
+        raise ValueError("ray-plane intersection behind camera; invalid")
+    return C + lam * ray_base
 
 
 CONFIDENCE_MIN = 0.35
