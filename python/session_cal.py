@@ -22,6 +22,9 @@ class SessionCal:
     homography_reproj_rms_px: float
     camera_height_above_table_m: float
     image_size: tuple                             # (w, h)
+    # Added 2026-04-24: {"R_cam_in_base": 3x3 list, "C_cam_in_base_m": 3 list,
+    # "reproj_rms_px": float} — None before first solvePnP run.
+    cam_extrinsics_survey1: dict | None = None
 
     def save(self, path: str) -> None:
         payload: dict[str, Any] = {
@@ -38,6 +41,7 @@ class SessionCal:
             "camera_height_above_table_m":
                 float(self.camera_height_above_table_m),
             "image_size": list(self.image_size),
+            "cam_extrinsics_survey1": self.cam_extrinsics_survey1,
         }
         with open(path, "w") as f:
             json.dump(payload, f, indent=2)
@@ -56,4 +60,5 @@ class SessionCal:
             homography_reproj_rms_px=float(d["homography_reproj_rms_px"]),
             camera_height_above_table_m=float(d["camera_height_above_table_m"]),
             image_size=tuple(d["image_size"]),
+            cam_extrinsics_survey1=d.get("cam_extrinsics_survey1"),
         )
