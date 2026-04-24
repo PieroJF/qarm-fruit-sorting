@@ -124,6 +124,13 @@ def check_session_cal():
         if pnp_rms > 5.0:
             warn.append(f"solvePnP RMS={pnp_rms:.2f}px > 5.0")
             ok = False
+        cam_z = cal.cam_extrinsics_survey1.get("C_cam_in_base_m", [0, 0, 0])[2]
+        chess_z = float(cal.chess_origin_in_base_m[2])
+        if cam_z <= chess_z:
+            warn.append(
+                f"camera Z {cam_z:.3f} <= chess origin Z {chess_z:.3f} "
+                f"(mirror-flipped solvePnP?)")
+            ok = False
     detail = f"RMS={rms:.2f}px age={age_h:.1f}h" if age_h is not None \
         else f"RMS={rms:.2f}px age=?"
     if warn:
