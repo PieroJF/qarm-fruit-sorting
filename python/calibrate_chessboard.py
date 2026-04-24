@@ -52,6 +52,30 @@ def _chess_world_pts() -> np.ndarray:
     )
 
 
+def _grid_with_ordering(origin_base, flip_i, flip_j,
+                        rows=_INNER_ROWS, cols=_INNER_COLS,
+                        square_mm=_SQUARE_MM):
+    """Build a (N, 3) float32 chessboard grid in base frame, with corners
+    ordered as if OpenCV's findChessboardCorners index-0 were one of the
+    four physical corners. flip_i=True means OpenCV scanned columns
+    right-to-left w.r.t. our touched origin; flip_j=True means it scanned
+    rows bottom-to-top. The 4 (flip_i, flip_j) combinations cover all
+    possible OpenCV orientations for a non-square chessboard."""
+    pts = np.zeros((rows * cols, 3), dtype=np.float32)
+    k = 0
+    for j_img in range(rows):
+        for i_img in range(cols):
+            i_phys = (cols - 1 - i_img) if flip_i else i_img
+            j_phys = (rows - 1 - j_img) if flip_j else j_img
+            pts[k] = [
+                float(origin_base[0]) + i_phys * square_mm / 1000.0,
+                float(origin_base[1]) + j_phys * square_mm / 1000.0,
+                float(origin_base[2]),
+            ]
+            k += 1
+    return pts
+
+
 def _find_chessboard_corners(frame_bgr: np.ndarray) -> np.ndarray:
     """Return subpixel-refined inner corners, shape (N, 2) float32.
     Raises RuntimeError if findChessboardCorners fails."""
@@ -119,38 +143,50 @@ def run_calibration_core(
     # D415 colour stream is rectified by the SDK; zero distortion.
     dist_coeffs = np.zeros(5, dtype=np.float64)
 
-    # corners_3d_base: same grid ordering as _chess_world_pts() (row-major
-    # over rows then cols), offset into base frame by touched_tcp.
+    # 4-orientation sweep: cv2.findChessboardCorners may place index-0 at
+    # any of the 4 physical corners of the board depending on camera pose.
+    # We try all 4 (flip_i, flip_j) combinations and keep the one that
+    # places the camera above the chessboard plane with lowest RMS.
     origin_base = np.asarray(touched_tcp, dtype=np.float64)
-    corners_3d_base = np.zeros((_INNER_ROWS * _INNER_COLS, 3), dtype=np.float32)
-    k = 0
-    for j in range(_INNER_ROWS):
-        for i in range(_INNER_COLS):
-            corners_3d_base[k] = [
-                origin_base[0] + i * _SQUARE_MM / 1000.0,
-                origin_base[1] + j * _SQUARE_MM / 1000.0,
-                origin_base[2],
-            ]
-            k += 1
+    orientations = [
+        ("original",                False, False),
+        ("flip-cols (i reversed)",  True,  False),
+        ("flip-rows (j reversed)",  False, True),
+        ("180° rotation",           True,  True),
+    ]
 
-    try:
-        R_cam, C_cam, pnp_rms = solve_survey1_extrinsics(
-            corners_2d=image_pts.astype(np.float32),
-            corners_3d_base=corners_3d_base,
-            K=K_matrix,
-            dist_coeffs=dist_coeffs,
-            chess_origin_z_in_base=float(origin_base[2]),
-        )
-        print(f"  solvePnP: RMS = {pnp_rms:.2f} px, "
-              f"camera at base XYZ = {C_cam.round(3).tolist()} m")
+    best = None   # (R_cam, C_cam, rms, name)
+    rejections = []
+    for name, flip_i, flip_j in orientations:
+        grid = _grid_with_ordering(origin_base, flip_i, flip_j)
+        try:
+            R_c, C_c, rms_c = solve_survey1_extrinsics(
+                corners_2d=image_pts.astype(np.float32),
+                corners_3d_base=grid,
+                K=K_matrix,
+                dist_coeffs=dist_coeffs,
+                chess_origin_z_in_base=float(origin_base[2]),
+            )
+        except RuntimeError as ex:
+            rejections.append(f"    {name}: {ex}")
+            continue
+        if best is None or rms_c < best[2]:
+            best = (R_c, C_c, rms_c, name)
+
+    if best is None:
+        print("  solvePnP REJECTED (all 4 orientations failed):")
+        for r in rejections:
+            print(r)
+        cam_extrinsics_survey1 = None
+    else:
+        R_cam, C_cam, pnp_rms, chosen = best
+        print(f"  solvePnP: orientation={chosen}, RMS={pnp_rms:.2f} px, "
+              f"camera at base XYZ={C_cam.round(3).tolist()} m")
         cam_extrinsics_survey1 = {
             "R_cam_in_base": R_cam.tolist(),
             "C_cam_in_base_m": C_cam.tolist(),
             "reproj_rms_px": pnp_rms,
         }
-    except RuntimeError as ex:
-        print(f"  solvePnP REJECTED: {ex}")
-        cam_extrinsics_survey1 = None
 
     cal = SessionCal(
         timestamp=_dt.datetime.now().isoformat(timespec="seconds"),
