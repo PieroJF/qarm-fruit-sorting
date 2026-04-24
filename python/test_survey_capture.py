@@ -119,7 +119,6 @@ def test_capture_fruits_raises_when_arm_not_settled(monkeypatch):
     monkeypatch.setattr(
         "calibrate_closed_loop.slow_move_to_joints",
         lambda *_args, **_kw: None,
-        raising=False,
     )
 
     with pytest.raises(RuntimeError, match="settle"):

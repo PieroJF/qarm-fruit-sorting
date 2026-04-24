@@ -25,9 +25,10 @@ _SQUARE_MM = 30.0
 _WARN_RESIDUAL_MM = 3.0
 _ERROR_RESIDUAL_MM = 10.0
 
-_SETTLE_SLEEP_S = 1.5           # fixed dwell after slow_move_to_joints
-_SETTLE_JOINT_TOL_RAD = 0.05    # ~2.9° joint-norm tolerance
-# Mutable monkeypatch hook for tests that don't want to sleep:
+_SETTLE_SLEEP_S = 1.5           # canonical production dwell; do not reassign
+_SETTLE_JOINT_TOL_RAD = 0.05    # joint-norm L2 tolerance (~2.9° on one
+                                # joint, ~1.4° evenly spread across four)
+# Runtime uses `_settle_sleep_s` so tests can monkeypatch it to 0.01.
 _settle_sleep_s = _SETTLE_SLEEP_S
 
 
