@@ -116,6 +116,14 @@ def check_session_cal():
         warn.append(f"age={age_h:.1f}h > 12"); ok = False
     if cal.survey_pose_joints_rad is None or len(cal.survey_pose_joints_rad) != 4:
         warn.append("survey_pose missing"); ok = False
+    if cal.cam_extrinsics_survey1 is None:
+        warn.append("cam_extrinsics_survey1 missing")
+        ok = False
+    else:
+        pnp_rms = cal.cam_extrinsics_survey1.get("reproj_rms_px", float("inf"))
+        if pnp_rms > 5.0:
+            warn.append(f"solvePnP RMS={pnp_rms:.2f}px > 5.0")
+            ok = False
     detail = f"RMS={rms:.2f}px age={age_h:.1f}h" if age_h is not None \
         else f"RMS={rms:.2f}px age=?"
     if warn:
