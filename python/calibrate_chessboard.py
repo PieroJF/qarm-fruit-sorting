@@ -105,6 +105,52 @@ def run_calibration_core(
         cx=d415_intrinsics["cx"], cy=d415_intrinsics["cy"],
     )
 
+    # --- solvePnP: recover camera pose in base frame at survey1 ---
+    # Ray-plane projection (fruit_detector.pixel_to_base_frame) uses this
+    # instead of the nadir-pinhole parallax approximation. Refuses to
+    # persist calibration if reprojection RMS > 5 px.
+    from calibrate_extrinsics import solve_survey1_extrinsics
+
+    K_matrix = np.array([
+        [d415_intrinsics["fx"], 0.0, d415_intrinsics["cx"]],
+        [0.0, d415_intrinsics["fy"], d415_intrinsics["cy"]],
+        [0.0, 0.0, 1.0],
+    ], dtype=np.float64)
+    # D415 colour stream is rectified by the SDK; zero distortion.
+    dist_coeffs = np.zeros(5, dtype=np.float64)
+
+    # corners_3d_base: same grid ordering as _chess_world_pts() (row-major
+    # over rows then cols), offset into base frame by touched_tcp.
+    origin_base = np.asarray(touched_tcp, dtype=np.float64)
+    corners_3d_base = np.zeros((_INNER_ROWS * _INNER_COLS, 3), dtype=np.float32)
+    k = 0
+    for j in range(_INNER_ROWS):
+        for i in range(_INNER_COLS):
+            corners_3d_base[k] = [
+                origin_base[0] + i * _SQUARE_MM / 1000.0,
+                origin_base[1] + j * _SQUARE_MM / 1000.0,
+                origin_base[2],
+            ]
+            k += 1
+
+    try:
+        R_cam, C_cam, pnp_rms = solve_survey1_extrinsics(
+            corners_2d=image_pts.astype(np.float32),
+            corners_3d_base=corners_3d_base,
+            K=K_matrix,
+            dist_coeffs=dist_coeffs,
+        )
+        print(f"  solvePnP: RMS = {pnp_rms:.2f} px, "
+              f"camera at base XYZ = {C_cam.round(3).tolist()} m")
+        cam_extrinsics_survey1 = {
+            "R_cam_in_base": R_cam.tolist(),
+            "C_cam_in_base_m": C_cam.tolist(),
+            "reproj_rms_px": pnp_rms,
+        }
+    except RuntimeError as ex:
+        print(f"  solvePnP REJECTED: {ex}")
+        cam_extrinsics_survey1 = None
+
     cal = SessionCal(
         timestamp=_dt.datetime.now().isoformat(timespec="seconds"),
         chess_origin_in_base_m=np.asarray(touched_tcp, dtype=float),
@@ -119,6 +165,7 @@ def run_calibration_core(
         homography_reproj_rms_px=rms_px_in_pixels,
         camera_height_above_table_m=cam_h_mm / 1000.0,
         image_size=(captured_frame.shape[1], captured_frame.shape[0]),
+        cam_extrinsics_survey1=cam_extrinsics_survey1,
     )
     cal.save(out_path)
     print(f"\n  session_cal.json written to {out_path}")
