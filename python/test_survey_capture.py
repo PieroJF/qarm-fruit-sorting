@@ -81,6 +81,51 @@ TESTS = [test_warmup_skips_dark_frames,
          test_residual_no_chessboard_returns_none]
 
 
+def test_capture_fruits_raises_when_arm_not_settled(monkeypatch):
+    """If read_all returns joints far from the target survey pose after
+    the 1.5 s dwell, capture_fruits must raise RuntimeError."""
+    import numpy as np
+    import pytest
+    from survey_capture import capture_fruits
+    from session_cal import SessionCal
+
+    class StuckDriver:
+        def read_all(self):
+            # Returns joints that differ from survey by 0.2 rad on joint 2.
+            return np.array([0.0, 0.5, 0.9, 0.0]), 0.1
+
+    class DummyCam:
+        intrinsics = {"fx": 380.0, "fy": 380.0, "cx": 320.0, "cy": 240.0}
+        def read(self):
+            import numpy as np
+            return np.full((480, 640, 3), 100, dtype=np.uint8), \
+                   np.full((480, 640), 300, dtype=np.uint16)
+
+    cal = SessionCal(
+        timestamp="t",
+        chess_origin_in_base_m=np.zeros(3),
+        h_pixel_to_chess_mm=np.eye(3),
+        survey_pose_joints_rad=np.array([0.0, 0.5, 0.7, 0.0]),
+        chess_pattern={"cols": 7, "rows": 5, "square_mm": 30.0},
+        d415_intrinsics={"fx": 380.0, "fy": 380.0, "cx": 320.0, "cy": 240.0},
+        homography_reproj_rms_px=0.5,
+        camera_height_above_table_m=0.30,
+        image_size=(640, 480),
+    )
+
+    # Stub out slow_move_to_joints (otherwise test would try to import driver).
+    import survey_capture
+    monkeypatch.setattr(survey_capture, "_settle_sleep_s", 0.01)
+    monkeypatch.setattr(
+        "calibrate_closed_loop.slow_move_to_joints",
+        lambda *_args, **_kw: None,
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeError, match="settle"):
+        capture_fruits(StuckDriver(), DummyCam(), cal)
+
+
 def main():
     fails = 0
     for fn in TESTS:

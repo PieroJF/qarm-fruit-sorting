@@ -25,6 +25,11 @@ _SQUARE_MM = 30.0
 _WARN_RESIDUAL_MM = 3.0
 _ERROR_RESIDUAL_MM = 10.0
 
+_SETTLE_SLEEP_S = 1.5           # fixed dwell after slow_move_to_joints
+_SETTLE_JOINT_TOL_RAD = 0.05    # ~2.9° joint-norm tolerance
+# Mutable monkeypatch hook for tests that don't want to sleep:
+_settle_sleep_s = _SETTLE_SLEEP_S
+
 
 def _warmup_and_capture(camera, warmup_timeout_s: float = 10.0):
     """Poll camera.read() until color.mean()>5, then median 5 frames.
@@ -114,6 +119,18 @@ def capture_fruits(driver, camera, session_cal: SessionCal):
     from calibrate_closed_loop import slow_move_to_joints  # existing helper
     slow_move_to_joints(driver, session_cal.survey_pose_joints_rad,
                         float(0.10))
+    # Dwell so the position-mode PID can actually reach the target
+    # (it has ~0.5-1.0 s tracking lag on big descents).
+    time.sleep(_settle_sleep_s)
+    # Sanity: confirm the arm actually got there; abort loudly if not.
+    measured_joints, _ = driver.read_all()
+    err = np.linalg.norm(
+        np.asarray(measured_joints, dtype=float)
+        - np.asarray(session_cal.survey_pose_joints_rad, dtype=float))
+    if err > _SETTLE_JOINT_TOL_RAD:
+        raise RuntimeError(
+            f"arm failed to settle at survey1 "
+            f"(joint-norm err {err:.3f} rad > {_SETTLE_JOINT_TOL_RAD})")
     color, depth, _ = _warmup_and_capture(camera)
     residual_mm, n_corners = _chessboard_residual(color, session_cal)
     warnings: list[str] = []
