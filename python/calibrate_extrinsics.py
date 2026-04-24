@@ -38,8 +38,8 @@ def solve_survey1_extrinsics(corners_2d: np.ndarray,
 
     R_base_to_cam, _ = cv2.Rodrigues(rvec)     # rotates base -> cam
     R_cam_in_base = R_base_to_cam.T            # rotates cam  -> base
-    # tvec is base origin expressed in camera frame.
-    # Camera centre in base frame = -R_cam_in_base^T @ tvec
+    # solvePnP returns (rvec, tvec) such that X_cam = R_base_to_cam @ X_base
+    # + tvec; set X_cam=0 and solve for the camera centre in base frame.
     C_cam_in_base = (-R_base_to_cam.T @ tvec).reshape(3)
 
     # Reprojection RMS for diagnostics / gate
