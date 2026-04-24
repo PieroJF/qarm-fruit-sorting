@@ -518,7 +518,7 @@ def test_pixel_to_base_frame_offset_camera():
     )
     # Sanity: same pixel at different fruit heights must produce same XY
     # for a nadir camera, but DIFFERENT XY for this tilted camera. We only
-    # check that the result is finite and finite.
+    # check that the result is finite and distinct between the two.
     xyz_low  = pixel_to_base_frame((320, 240), 10.0, cal)
     xyz_high = pixel_to_base_frame((320, 240), 80.0, cal)
     assert np.all(np.isfinite(xyz_low))
