@@ -17,6 +17,28 @@ if _HERE not in sys.path:
 _RESULTS = []
 
 
+def _nadir_extrinsics(height_m: float = 0.30, origin_m=(0.30, 0.0, 0.0)):
+    """Build a cam_extrinsics_survey1 dict for a perfectly nadir camera
+    above (origin_m.xy, origin_m.z + height_m). Used to keep legacy
+    detector tests close to their old nadir-pinhole behaviour while still
+    exercising the new ray-plane pipeline.
+
+    R rotates camera frame (+Z looking into scene) so camera optical axis
+    points in the -Z_base direction, i.e. straight down.
+    """
+    import numpy as np
+    R = np.array([[1.0, 0.0, 0.0],
+                  [0.0, -1.0, 0.0],
+                  [0.0, 0.0, -1.0]], dtype=np.float64)
+    C = np.array([origin_m[0], origin_m[1], origin_m[2] + height_m],
+                  dtype=np.float64)
+    return {
+        "R_cam_in_base": R.tolist(),
+        "C_cam_in_base_m": C.tolist(),
+        "reproj_rms_px": 0.1,
+    }
+
+
 def _section(name, fn):
     try:
         fn()
@@ -312,6 +334,8 @@ def _fake_session_cal(origin=(0.30, 0.10, 0.02),
         homography_reproj_rms_px=0.5,
         camera_height_above_table_m=cam_h_m,
         image_size=(1280, 720),
+        cam_extrinsics_survey1=_nadir_extrinsics(
+            height_m=cam_h_m, origin_m=origin),
     )
     return cal
 

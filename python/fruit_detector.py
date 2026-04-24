@@ -324,7 +324,8 @@ def pixel_to_base_frame(center_px: tuple, fruit_top_z_mm: float,
     C = np.asarray(extr["C_cam_in_base_m"], dtype=np.float64)
     ray_base = R_cam_in_base @ ray_cam
 
-    target_z = float(fruit_top_z_mm) / 1000.0
+    origin_z = float(session_cal.chess_origin_in_base_m[2])
+    target_z = origin_z + float(fruit_top_z_mm) / 1000.0
     if abs(ray_base[2]) < 1e-6:
         raise ValueError("ray is parallel to table plane; no intersection")
     lam = (target_z - C[2]) / ray_base[2]
