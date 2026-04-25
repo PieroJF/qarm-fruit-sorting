@@ -53,11 +53,10 @@ function [positions, types] = build_queue(fruit_list)
     type_name = {'strawberry', 'tomato', 'banana'};
 
     if isempty(fruit_list)
-        % Legacy demo fallback — kept so FSM slice can run standalone.
-        positions = py.list({ ...
-            py.list({0.30,  0.20, 0.02}), ...
-            py.list({0.25, -0.15, 0.02})});
-        types = py.list({'strawberry', 'banana'});
+        % Empty queue = nothing to sort. Autonomous mode drives via
+        % main_final.py shell-out (see spec §4.4), not via Simulink FSM.
+        positions = py.list({});
+        types = py.list({});
         return
     end
 

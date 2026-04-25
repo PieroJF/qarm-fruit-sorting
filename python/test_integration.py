@@ -1,17 +1,18 @@
 """
 End-to-end integration tests against mock hardware.
 
-Exercises the full fruit-sorting pipeline without a real QArm or camera so
+Exercises the FSM and controller pipeline without a real QArm so
 regressions are caught before lab sessions. Covers:
 
-1. Fruit detection on a synthetic BGR + depth scene.
-2. Depth-to-base projection via detection_depth_mm + pixel_to_world.
-3. sorting_controller.FruitSortingController FSM (blocking loop) against
+1. sorting_controller.FruitSortingController FSM (blocking loop) against
    a MockQArm. Verifies full pick/place cycle, IK safety on unreachable
    fruits, gripper ramp + readback, and per-fruit Z adaptation.
-4. sorting_controller_sim.StepController (Simulink-facing twin) against
+2. sorting_controller_sim.StepController (Simulink-facing twin) against
    MockQArm. Verifies the stepwise API completes without exceptions for
    reachable fruits.
+3. Trajectory and kinematic utilities (quintic, jog clamping, etc.).
+
+Vision tests (fruit detection) are now in test_fruit_detector.py.
 
 Run with:
     C:/Python313/python.exe python/test_integration.py
@@ -29,9 +30,6 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-import cv2
-from fruit_detector import (detect_fruits, detection_depth_mm,
-                             CIRCULARITY_THRESH)
 from qarm_kinematics import forward_kinematics, inverse_kinematics
 from sorting_controller import FruitSortingController, State, GRIP_OPEN
 
@@ -63,71 +61,9 @@ class MockQArm:
         self.cmd_log.append((phi.copy(), float(g)))
 
 
-def synthetic_scene():
-    """Return a (bgr, depth) pair with 3 red/yellow fruits in known places.
-
-    All depths inside the plausible band [200, 700] mm so detection_depth_mm
-    returns valid values. Pixels are chosen to back-project to reachable
-    base-frame positions given identity T_cam_to_base.
-    """
-    bgr = np.zeros((720, 1280, 3), dtype=np.uint8)
-    depth = np.full((720, 1280), 800, dtype=np.uint16)  # background > band
-
-    # Strawberry (elongated red): circularity ~0.5
-    cv2.ellipse(bgr, (400, 400), (40, 70), 0, 0, 360, (0, 0, 230), -1)
-    cv2.ellipse(depth, (400, 400), (40, 70), 0, 0, 360, 430, -1)
-
-    # Tomato (round red, high saturation): circularity ~0.9
-    cv2.circle(bgr, (800, 400), 45, (20, 20, 240), -1)
-    cv2.circle(depth, (800, 400), 45, 450, -1)
-
-    # Banana (yellow): falls in HSV banana range
-    cv2.ellipse(bgr, (640, 250), (80, 25), 0, 0, 360, (0, 230, 230), -1)
-    cv2.ellipse(depth, (640, 250), (80, 25), 0, 0, 360, 400, -1)
-
-    return bgr, depth
-
-
 # ------------------------------------------------------------------------
 # Tests
 # ------------------------------------------------------------------------
-def test_fruit_detection():
-    name = "fruit_detection"
-    bgr, depth = synthetic_scene()
-    dets = detect_fruits(bgr, depth)
-    types = sorted(d.fruit_type for d in dets)
-    assert len(dets) == 3, f"expected 3 detections, got {len(dets)}: {types}"
-    assert "banana" in types, f"missing banana: {types}"
-    # Red fruit classification depends on CIRCULARITY_THRESH; we don't care
-    # whether the round red is strawberry or tomato, only that both red blobs
-    # are detected with SOME red classification
-    red_dets = [d for d in dets if d.fruit_type in ("strawberry", "tomato")]
-    assert len(red_dets) == 2, f"expected 2 red blobs, got {len(red_dets)}"
-
-    # Contour-based depth should land in plausible band
-    for d in dets:
-        dmm = detection_depth_mm(d, depth)
-        assert dmm is not None, f"no depth for {d.fruit_type}"
-        assert 350 < dmm < 500, \
-            f"{d.fruit_type} depth {dmm:.0f}mm outside expected 350-500mm"
-    return name, True, f"3 detections, depths within expected band"
-
-
-def test_detection_depth_rejects_background():
-    """If the blob is surrounded by depth values outside the band, the
-    helper should return None instead of leaking a background depth."""
-    name = "detection_depth_rejects_background"
-    bgr = np.zeros((200, 200, 3), dtype=np.uint8)
-    cv2.circle(bgr, (100, 100), 30, (0, 0, 230), -1)
-    # Depth is ALL background (1200 mm) even inside the blob
-    depth = np.full((200, 200), 1200, dtype=np.uint16)
-    dets = detect_fruits(bgr, depth)
-    assert len(dets) == 1
-    dmm = detection_depth_mm(dets[0], depth)
-    assert dmm is None, f"expected None, got {dmm}"
-    return name, True, "correctly rejected out-of-band blob"
-
-
 def test_controller_full_cycle_pick_only():
     """FruitSortingController pick_only mode: detect -> pick -> lift -> open."""
     name = "controller_pick_only"
@@ -139,6 +75,7 @@ def test_controller_full_cycle_pick_only():
     c.T_PICK = 0.05
     c.T_DWELL = 0.02
     c.T_GRIP = 0.02
+    c.T_SETTLE = 0.02
     # Two reachable fruits at distinct Z values
     positions = [np.array([0.35, 0.10, 0.13]),
                  np.array([0.30, -0.05, 0.08])]
@@ -172,7 +109,7 @@ def test_controller_skips_unreachable():
     q = MockQArm()
     c = FruitSortingController(q, pick_only=True)
     c.T_TRANSIT = 0.05; c.T_APPROACH = 0.05; c.T_PICK = 0.05
-    c.T_DWELL = 0.02; c.T_GRIP = 0.02
+    c.T_DWELL = 0.02; c.T_GRIP = 0.02; c.T_SETTLE = 0.02
     # First fruit is far outside workspace (>1 m), second is reachable
     c.set_fruit_positions(
         [np.array([2.0, 0.0, 0.5]), np.array([0.35, 0.1, 0.13])],
@@ -199,7 +136,7 @@ def test_controller_full_sort_mode():
     q = MockQArm()
     c = FruitSortingController(q, pick_only=False)
     c.T_TRANSIT = 0.05; c.T_APPROACH = 0.05; c.T_PICK = 0.05
-    c.T_DWELL = 0.02; c.T_GRIP = 0.02
+    c.T_DWELL = 0.02; c.T_GRIP = 0.02; c.T_SETTLE = 0.02
     # Override baskets to reachable positions
     c.BASKETS = {
         'strawberry': np.array([0.30, -0.15, 0.10]),
@@ -267,29 +204,6 @@ def test_quintic_boundary_conditions():
     assert np.linalg.norm(mid - expected_mid) < 1e-9, \
         f"mid not halfway: got {mid}, expected {expected_mid}"
     return name, True, "v=0, a=0 at both endpoints; midpoint exact"
-
-
-def test_detect_and_project_fixed_shape():
-    """detect_and_project returns a fixed-size matrix even when fewer
-    fruits are detected than N_MAX (required for the MATLAB/Simulink
-    MATLAB Function block contract)."""
-    name = "detect_and_project_matrix"
-    from fruit_detector import detect_and_project, N_MAX_DEFAULT
-    bgr, depth = synthetic_scene()
-    intr = {'fx': 907.2, 'fy': 906.8, 'cx': 645.0, 'cy': 356.7}
-    T = np.eye(4)  # identity: cam coords = base coords
-    out, count = detect_and_project(bgr, depth, intr, T)
-    assert out.shape == (N_MAX_DEFAULT, 5), \
-        f"shape {out.shape} != ({N_MAX_DEFAULT}, 5)"
-    assert 2 <= count <= 3, f"expected 2-3 detections, got {count}"
-    # Each valid row has type_id in {1,2,3}
-    for i in range(count):
-        tid = int(out[i, 0])
-        assert tid in (1, 2, 3), f"row {i} bad tid {tid}"
-    # Unused rows are zeros
-    for i in range(count, N_MAX_DEFAULT):
-        assert np.all(out[i, :] == 0), f"row {i} not zeroed: {out[i]}"
-    return name, True, f"{count} rows populated, {N_MAX_DEFAULT-count} zeroed"
 
 
 def test_sim_controller():
@@ -409,7 +323,7 @@ def test_sorting_controller_emits_trace_events():
     q = MockQArm()
     c = FruitSortingController(q, pick_only=True, logger=logger)
     c.T_TRANSIT = 0.02; c.T_APPROACH = 0.02; c.T_PICK = 0.02
-    c.T_DWELL = 0.01; c.T_GRIP = 0.01
+    c.T_DWELL = 0.01; c.T_GRIP = 0.01; c.T_SETTLE = 0.01
     c.set_fruit_positions([[0.35, 0.10, 0.13]], ["strawberry"])
     c.state = State.GO_HOME
     for _ in range(3000):
@@ -466,9 +380,6 @@ def test_remote_joint_jog_clamps_limits():
 # Runner
 # ------------------------------------------------------------------------
 TESTS = [
-    test_fruit_detection,
-    test_detection_depth_rejects_background,
-    test_detect_and_project_fixed_shape,
     test_quintic_boundary_conditions,
     test_controller_full_cycle_pick_only,
     test_controller_skips_unreachable,
