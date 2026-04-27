@@ -1,0 +1,488 @@
+"""
+main_gui.py — Tkinter GUI for the QArm fruit-sorting system.
+
+Layout:
+  +---------------------+----------------------------+
+  | live D415 video     | EMERGENCY STOP             |
+  | (640 x 360)         |                            |
+  |                     | Manual Teleop (XYZ +/-)    |
+  |                     |   move to basket: B / T / S|
+  |                     |                            |
+  |                     | Gripper: open / close      |
+  |                     | Camera: survey1 / refresh  |
+  |                     |                            |
+  |                     | Mode: Manual | Auto        |
+  |                     | Auto: all / b / t / s      |
+  |                     |                            |
+  |                     | Status:  ...               |
+  +---------------------+----------------------------+
+
+Run:
+  py -3.13 python/main_gui.py
+
+Dependencies (beyond the existing project):
+  - tkinter (stdlib on python.org Windows builds)
+  - Pillow  (pip install pillow) — needed for cv2 -> Tk image conversion
+
+Known limitations:
+  - Emergency stop sets an abort flag and refreshes the joint command,
+    but it CANNOT interrupt a slow_move_to_joints() that is already
+    inside its 200-step interpolation loop. The arm finishes the current
+    segment (~3-4 s worst case) before the abort takes effect.
+  - The 30 fps background camera reader and the auto-mode capture_fruits()
+    both call camera.read() — frame drops are possible but the camera
+    driver tolerates concurrent reads.
+  - No preflight; assumes session_cal.json is fresh and chess origin is
+    correct. Run main_final.py first if you want the safety checks.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import threading
+import time
+
+import numpy as np
+import cv2
+import tkinter as tk
+from tkinter import ttk
+
+try:
+    from PIL import Image, ImageTk
+except ImportError:
+    print("ERROR: this GUI requires Pillow.  pip install pillow", file=sys.stderr)
+    raise
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+from session_cal import SessionCal
+from qarm_driver import QArmDriver
+from camera import QArmCamera
+from sorting_controller import (FruitSortingController,
+                                  GRIP_OPEN, GRIP_CLOSE)
+from qarm_kinematics import forward_kinematics, inverse_kinematics
+from calibrate_closed_loop import slow_move_to_joints
+from survey_capture import capture_fruits
+from picker_viewer import _pick_category
+
+
+# ---------------------------------------------------------------------------
+# Tunable constants
+# ---------------------------------------------------------------------------
+
+TELEOP_STEP_M = 0.02            # metres per teleop button press
+TELEOP_SECONDS = 0.6            # slow_move_to_joints duration for a teleop step
+TELEOP_STEPS = 40               # interpolation steps for a teleop motion
+BASKET_SECONDS = 2.0            # slow_move_to_joints duration for basket move
+SURVEY_SECONDS = 2.5            # slow_move_to_joints duration for survey1 move
+
+VIDEO_W = 640
+VIDEO_H = 360
+CAMERA_LOOP_HZ = 30
+UI_REFRESH_HZ = 20
+
+REPO_ROOT = os.path.dirname(_HERE)
+DEFAULT_SESSION_CAL = os.path.join(REPO_ROOT, "session_cal.json")
+DEFAULT_TEACH_POINTS = os.path.join(REPO_ROOT, "teach_points.json")
+
+
+# ---------------------------------------------------------------------------
+# Main GUI class
+# ---------------------------------------------------------------------------
+
+class FruitSortingGUI:
+    def __init__(self):
+        # --- hardware + calibration ---
+        if not os.path.exists(DEFAULT_SESSION_CAL):
+            raise SystemExit(
+                f"missing {DEFAULT_SESSION_CAL} — run "
+                "calibrate_chessboard.py first.")
+        self.session_cal = SessionCal.load(DEFAULT_SESSION_CAL)
+        with open(DEFAULT_TEACH_POINTS) as f:
+            self.teach_points = json.load(f)
+        print("connecting to QArm + D415...")
+        self.driver = QArmDriver()
+        self.driver.connect()
+        time.sleep(0.3)
+        self.camera = QArmCamera()
+        self.camera.open()
+        self.controller = FruitSortingController(
+            self.driver, camera=self.camera)
+
+        # --- state ---
+        self.mode = "manual"
+        self.busy = False
+        self.busy_lock = threading.Lock()
+        self.abort_event = threading.Event()
+        self._latest_frame = None
+        self._frame_lock = threading.Lock()
+
+        # --- UI ---
+        self.root = tk.Tk()
+        self.root.title("QArm Fruit Sorting — GUI")
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._build_ui()
+        self._on_mode_change()  # set initial enable/disable
+
+        # --- background threads ---
+        self._stop_threads = threading.Event()
+        self._camera_thread = threading.Thread(
+            target=self._camera_loop, daemon=True)
+        self._camera_thread.start()
+
+        # schedule periodic video updates
+        self.root.after(int(1000 / UI_REFRESH_HZ), self._update_video)
+
+    # -----------------------------------------------------------------
+    # UI construction
+    # -----------------------------------------------------------------
+
+    def _build_ui(self):
+        root = self.root
+
+        # left: video
+        left = ttk.Frame(root, padding=4)
+        left.grid(row=0, column=0, sticky="n")
+        self.video_label = tk.Label(left, width=VIDEO_W, height=VIDEO_H,
+                                       bg="black")
+        self.video_label.pack()
+
+        # right: controls
+        right = ttk.Frame(root, padding=8)
+        right.grid(row=0, column=1, sticky="n")
+
+        # ----- emergency stop -----
+        tk.Button(right, text="EMERGENCY STOP", bg="#cc0000", fg="white",
+                  font=("Arial", 14, "bold"), height=2,
+                  command=self._emergency_stop).pack(fill="x", pady=(0, 8))
+
+        # ----- mode toggle -----
+        ttk.Separator(right, orient="horizontal").pack(fill="x", pady=4)
+        mode_row = ttk.Frame(right); mode_row.pack(fill="x")
+        ttk.Label(mode_row, text="Mode:").pack(side="left")
+        self.mode_var = tk.StringVar(value="manual")
+        ttk.Radiobutton(mode_row, text="Manual", variable=self.mode_var,
+                         value="manual", command=self._on_mode_change
+                         ).pack(side="left", padx=4)
+        ttk.Radiobutton(mode_row, text="Auto", variable=self.mode_var,
+                         value="auto", command=self._on_mode_change
+                         ).pack(side="left", padx=4)
+
+        # ----- manual teleop -----
+        ttk.Separator(right, orient="horizontal").pack(fill="x", pady=4)
+        ttk.Label(right, text="Manual Teleop (base frame, "
+                              f"{TELEOP_STEP_M*100:.0f} cm step)"
+                  ).pack(anchor="w")
+        self.manual_block = ttk.Frame(right); self.manual_block.pack(fill="x")
+
+        # XYZ pad
+        pad = ttk.Frame(self.manual_block); pad.pack(pady=2)
+        self.manual_buttons = []
+
+        def _mb(parent, text, r, c, fn):
+            b = tk.Button(parent, text=text, width=6,
+                          command=lambda: self._teleop(*fn))
+            b.grid(row=r, column=c, padx=1, pady=1)
+            self.manual_buttons.append(b)
+            return b
+
+        # row 0: +Y (forward / away from operator)
+        _mb(pad, "Y+",  0, 1, (0, +TELEOP_STEP_M, 0))
+        _mb(pad, "Z+",  0, 3, (0, 0, +TELEOP_STEP_M))
+        # row 1: -X / center / +X
+        _mb(pad, "X-",  1, 0, (-TELEOP_STEP_M, 0, 0))
+        _mb(pad, "X+",  1, 2, (+TELEOP_STEP_M, 0, 0))
+        # row 2: -Y / Z-
+        _mb(pad, "Y-",  2, 1, (0, -TELEOP_STEP_M, 0))
+        _mb(pad, "Z-",  2, 3, (0, 0, -TELEOP_STEP_M))
+
+        # baskets row
+        ttk.Label(self.manual_block, text="Move to basket:").pack(
+            anchor="w", pady=(6, 0))
+        baskets = ttk.Frame(self.manual_block); baskets.pack(fill="x")
+        b1 = tk.Button(baskets, text="Strawberry", width=10,
+                       command=lambda: self._move_to_basket("strawberry"))
+        b1.pack(side="left", padx=2)
+        b2 = tk.Button(baskets, text="Tomato", width=10,
+                       command=lambda: self._move_to_basket("tomato"))
+        b2.pack(side="left", padx=2)
+        b3 = tk.Button(baskets, text="Banana", width=10,
+                       command=lambda: self._move_to_basket("banana"))
+        b3.pack(side="left", padx=2)
+        self.manual_buttons.extend([b1, b2, b3])
+
+        # gripper
+        ttk.Label(self.manual_block, text="Gripper:").pack(
+            anchor="w", pady=(6, 0))
+        grip = ttk.Frame(self.manual_block); grip.pack(fill="x")
+        bg1 = tk.Button(grip, text="Open",  width=10,
+                        command=self._gripper_open)
+        bg1.pack(side="left", padx=2)
+        bg2 = tk.Button(grip, text="Close", width=10,
+                        command=self._gripper_close)
+        bg2.pack(side="left", padx=2)
+        self.manual_buttons.extend([bg1, bg2])
+
+        # camera ops
+        ttk.Label(self.manual_block, text="Camera:").pack(
+            anchor="w", pady=(6, 0))
+        cam = ttk.Frame(self.manual_block); cam.pack(fill="x")
+        bc1 = tk.Button(cam, text="Goto Survey1", width=12,
+                        command=self._goto_survey1)
+        bc1.pack(side="left", padx=2)
+        bc2 = tk.Button(cam, text="Refresh detect", width=12,
+                        command=self._refresh_detect)
+        bc2.pack(side="left", padx=2)
+        self.manual_buttons.extend([bc1, bc2])
+
+        # ----- auto block -----
+        ttk.Separator(right, orient="horizontal").pack(fill="x", pady=6)
+        ttk.Label(right, text="Auto Pick + Place").pack(anchor="w")
+        self.auto_block = ttk.Frame(right); self.auto_block.pack(fill="x")
+        self.auto_buttons = []
+        ba = tk.Button(self.auto_block, text="ALL  (B → T → S)",
+                       command=self._auto_all, height=2)
+        ba.pack(fill="x", pady=2)
+        bb = tk.Button(self.auto_block, text="Bananas only",
+                       command=lambda: self._auto_one("banana"))
+        bb.pack(fill="x", pady=1)
+        bt = tk.Button(self.auto_block, text="Tomatoes only",
+                       command=lambda: self._auto_one("tomato"))
+        bt.pack(fill="x", pady=1)
+        bs = tk.Button(self.auto_block, text="Strawberries only",
+                       command=lambda: self._auto_one("strawberry"))
+        bs.pack(fill="x", pady=1)
+        self.auto_buttons.extend([ba, bb, bt, bs])
+
+        # ----- status line -----
+        ttk.Separator(right, orient="horizontal").pack(fill="x", pady=6)
+        self.status_var = tk.StringVar(value="Ready")
+        ttk.Label(right, textvariable=self.status_var, wraplength=260,
+                  foreground="#003300").pack(anchor="w")
+
+    # -----------------------------------------------------------------
+    # Mode handling
+    # -----------------------------------------------------------------
+
+    def _on_mode_change(self):
+        self.mode = self.mode_var.get()
+        manual_state = "normal" if self.mode == "manual" else "disabled"
+        auto_state   = "normal" if self.mode == "auto"   else "disabled"
+        for b in self.manual_buttons:
+            b.configure(state=manual_state)
+        for b in self.auto_buttons:
+            b.configure(state=auto_state)
+        self._set_status(f"Mode: {self.mode}")
+
+    # -----------------------------------------------------------------
+    # Camera background reader + UI video update
+    # -----------------------------------------------------------------
+
+    def _camera_loop(self):
+        period = 1.0 / CAMERA_LOOP_HZ
+        while not self._stop_threads.is_set():
+            try:
+                color, _ = self.camera.read()
+                with self._frame_lock:
+                    self._latest_frame = color
+            except Exception:
+                pass
+            time.sleep(period)
+
+    def _update_video(self):
+        with self._frame_lock:
+            frame = None if self._latest_frame is None \
+                    else self._latest_frame.copy()
+        if frame is not None and frame.size > 0:
+            small = cv2.resize(frame, (VIDEO_W, VIDEO_H))
+            rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+            tkimg = ImageTk.PhotoImage(Image.fromarray(rgb))
+            self.video_label.configure(image=tkimg)
+            self.video_label.image = tkimg  # keep ref so GC doesn't kill it
+        if not self._stop_threads.is_set():
+            self.root.after(int(1000 / UI_REFRESH_HZ), self._update_video)
+
+    # -----------------------------------------------------------------
+    # Status helper (thread-safe via root.after)
+    # -----------------------------------------------------------------
+
+    def _set_status(self, msg: str):
+        # Tk widget access from worker threads must be marshalled.
+        self.root.after(0, lambda: self.status_var.set(msg))
+
+    # -----------------------------------------------------------------
+    # Worker dispatch (one long action at a time)
+    # -----------------------------------------------------------------
+
+    def _busy_guard(self, fn, label):
+        with self.busy_lock:
+            if self.busy:
+                self._set_status(
+                    f"Busy ({label} requested while another action runs)")
+                return
+            self.busy = True
+
+        def worker():
+            try:
+                fn()
+            except Exception as ex:
+                self._set_status(f"{label} error: {ex}")
+                import traceback; traceback.print_exc()
+            finally:
+                with self.busy_lock:
+                    self.busy = False
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    # -----------------------------------------------------------------
+    # Emergency stop
+    # -----------------------------------------------------------------
+
+    def _emergency_stop(self):
+        self.abort_event.set()
+        try:
+            joints, grip = self.driver.read_all()
+            self.driver.set_joints_and_gripper(np.asarray(joints), float(grip))
+            self._set_status("EMERGENCY STOP — arm frozen at current pose")
+        except Exception as ex:
+            self._set_status(f"E-STOP partial: {ex}")
+
+    # -----------------------------------------------------------------
+    # Manual actions
+    # -----------------------------------------------------------------
+
+    def _teleop(self, dx, dy, dz):
+        def fn():
+            joints, grip = self.driver.read_all()
+            ee_pos, _ = forward_kinematics(np.asarray(joints, dtype=float))
+            new_pos = ee_pos + np.array([dx, dy, dz], dtype=float)
+            try:
+                tgt = inverse_kinematics(new_pos, gamma=0.0)
+            except Exception as ex:
+                self._set_status(
+                    f"IK failed for {new_pos.round(3)}: {ex}")
+                return
+            slow_move_to_joints(self.driver, np.asarray(tgt), float(grip),
+                                seconds=TELEOP_SECONDS, steps=TELEOP_STEPS)
+            self._set_status(f"Moved to ee = {new_pos.round(3)}")
+        self._busy_guard(fn, f"teleop ({dx:+.2f},{dy:+.2f},{dz:+.2f})")
+
+    def _move_to_basket(self, fruit_type):
+        def fn():
+            basket_pos = self.controller.BASKETS.get(fruit_type)
+            if basket_pos is None:
+                self._set_status(f"no basket for {fruit_type}")
+                return
+            joints, grip = self.driver.read_all()
+            try:
+                tgt = inverse_kinematics(basket_pos.copy(), gamma=0.0)
+            except Exception as ex:
+                self._set_status(f"basket IK fail: {ex}")
+                return
+            slow_move_to_joints(self.driver, np.asarray(tgt), float(grip),
+                                seconds=BASKET_SECONDS)
+            self._set_status(f"At {fruit_type} basket")
+        self._busy_guard(fn, f"to-basket {fruit_type}")
+
+    def _gripper_open(self):
+        def fn():
+            actual = self.controller.set_gripper_ramp(GRIP_OPEN)
+            self._set_status(f"Gripper open (held = {actual:.2f})")
+        self._busy_guard(fn, "gripper open")
+
+    def _gripper_close(self):
+        def fn():
+            actual = self.controller.set_gripper_ramp(GRIP_CLOSE)
+            self._set_status(f"Gripper closed (held = {actual:.2f})")
+        self._busy_guard(fn, "gripper close")
+
+    def _goto_survey1(self):
+        def fn():
+            grip = float(self.teach_points.get("survey1", {}).get(
+                "gripper", 0.10))
+            slow_move_to_joints(self.driver,
+                                np.asarray(self.session_cal.survey_pose_joints_rad),
+                                grip, seconds=SURVEY_SECONDS)
+            self._set_status("At survey1")
+        self._busy_guard(fn, "goto survey1")
+
+    def _refresh_detect(self):
+        def fn():
+            dets, diag = capture_fruits(
+                self.driver, self.camera, self.session_cal)
+            counts = {}
+            for d in dets:
+                counts[d.fruit_type] = counts.get(d.fruit_type, 0) + 1
+            self._set_status(
+                f"Detected {len(dets)} fruits "
+                f"({', '.join(f'{k}={v}' for k, v in counts.items()) or '-'})")
+        self._busy_guard(fn, "refresh detect")
+
+    # -----------------------------------------------------------------
+    # Auto actions
+    # -----------------------------------------------------------------
+
+    def _auto_one(self, fruit_type):
+        def fn():
+            self.abort_event.clear()
+            self._set_status(f"Auto: picking all {fruit_type}…")
+            n = _pick_category(self.driver, self.camera, self.session_cal,
+                                self.controller, fruit_type,
+                                lambda: self.abort_event.is_set())
+            self._set_status(
+                f"Auto: {fruit_type} done — {n} picked"
+                + (" (aborted)" if self.abort_event.is_set() else ""))
+        self._busy_guard(fn, f"auto {fruit_type}")
+
+    def _auto_all(self):
+        def fn():
+            self.abort_event.clear()
+            total = 0
+            for ftype in ("banana", "tomato", "strawberry"):
+                if self.abort_event.is_set():
+                    break
+                self._set_status(f"Auto-all: {ftype}…")
+                n = _pick_category(self.driver, self.camera, self.session_cal,
+                                    self.controller, ftype,
+                                    lambda: self.abort_event.is_set())
+                total += n
+            self._set_status(
+                f"Auto-all done — {total} picked"
+                + (" (aborted)" if self.abort_event.is_set() else ""))
+        self._busy_guard(fn, "auto all")
+
+    # -----------------------------------------------------------------
+    # Lifecycle
+    # -----------------------------------------------------------------
+
+    def _on_close(self):
+        self._stop_threads.set()
+        self.abort_event.set()
+        try: self.camera.close()
+        except Exception: pass
+        try: self.driver.card.close()
+        except Exception: pass
+        self.root.destroy()
+
+    def run(self):
+        self.root.mainloop()
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main():
+    print("=" * 60)
+    print("  QArm Fruit Sorting — GUI")
+    print("=" * 60)
+    gui = FruitSortingGUI()
+    print("UI running.  Close the window to exit.")
+    gui.run()
+
+
+if __name__ == "__main__":
+    main()
