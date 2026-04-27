@@ -111,6 +111,11 @@ class FruitSortingController:
         self._traj_start_joints = None   # joint-space interp (2026-04-23)
         self._traj_target_joints = None  # set by _start_move via IK
         self._driving = False            # reentrancy guard for _drive_until_done
+        # Optional zero-arg callable invoked once per FSM tick from
+        # _drive_until_done. Used by picker_viewer to render the live D415
+        # feed during arm motion. Errors are caught + printed so display
+        # issues never crash arm control.
+        self.tick_observer = None
         # Gripper interpolation state — avoids -1289 overload stalls by
         # ramping the command and reading back the settled position after
         # the close, so we never keep torque against a stalled jaw.
@@ -176,6 +181,11 @@ class FruitSortingController:
                     print(f"[ERROR] state {self.state.name}: {ex}")
                     print("[ERROR] aborting — arm held at last commanded pose")
                     break
+                if self.tick_observer is not None:
+                    try:
+                        self.tick_observer()
+                    except Exception as obs_ex:
+                        print(f"[warn] tick_observer raised: {obs_ex}")
                 elapsed = time.time() - loop_start
                 sleep_time = dt - elapsed
                 if sleep_time > 0:
