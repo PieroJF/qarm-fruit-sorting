@@ -175,6 +175,15 @@ def _make_render_observer(feed, window, controller, fps_limit=30.0):
 MAX_CATEGORY_PICKS = 20
 RETRY_LIMIT_PER_TARGET = 2
 
+_STRAWBERRY_CALYX_BIAS_M = 0.02   # empirical 2026-04-27: strawberry red
+                                   # centroid sits noticeably toward the
+                                   # narrow tip end (taper geometry +
+                                   # overhead view), so the gripper closes
+                                   # on the tip and slips. Bias the pick
+                                   # 2cm along the calyx-direction unit
+                                   # vector so jaws straddle the wide
+                                   # body. Banana/tomato unaffected.
+
 
 def _pick_one(controller, detection, camera=None, window=None) -> bool:
     """Dispatch one synchronous pick. Returns True on success.
@@ -185,9 +194,20 @@ def _pick_one(controller, detection, camera=None, window=None) -> bool:
     return (success or exception) the feed is stopped + joined and
     the previous tick_observer is restored.
     """
-    print(f"  [picker] picking {detection.fruit_type} at "
-          f"{detection.center_base_m.round(3)} "
-          f"(conf={detection.confidence:.2f})")
+    target = np.asarray(detection.center_base_m, dtype=float).copy()
+    if (detection.fruit_type == "strawberry"
+            and detection.calyx_dir_base_unit is not None):
+        target[:2] += _STRAWBERRY_CALYX_BIAS_M * np.asarray(
+            detection.calyx_dir_base_unit, dtype=float)
+        print(f"  [picker] picking {detection.fruit_type} at "
+              f"{target.round(3)} (centroid "
+              f"{detection.center_base_m.round(3)} + "
+              f"{_STRAWBERRY_CALYX_BIAS_M*100:.0f}cm calyx bias, "
+              f"conf={detection.confidence:.2f})")
+    else:
+        print(f"  [picker] picking {detection.fruit_type} at "
+              f"{target.round(3)} "
+              f"(conf={detection.confidence:.2f})")
     feed = None
     prev_observer = getattr(controller, "tick_observer", None)
     try:
@@ -196,8 +216,7 @@ def _pick_one(controller, detection, camera=None, window=None) -> bool:
             feed.start()
             controller.tick_observer = _make_render_observer(
                 feed, window, controller)
-        return bool(controller.pick_single(
-            detection.center_base_m, detection.fruit_type))
+        return bool(controller.pick_single(target, detection.fruit_type))
     except Exception as ex:
         print(f"  [picker] pick_single raised: {ex}")
         traceback.print_exc()

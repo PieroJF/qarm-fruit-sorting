@@ -149,7 +149,7 @@ def test_banana_contours_finds_one():
                           (0, 220, 220))
     dets = _detect_banana_contours(img)
     assert len(dets) == 1, f"expected 1 banana, got {len(dets)}"
-    (cx, cy), area, bbox, conf = dets[0]
+    (cx, cy), area, bbox, conf, _green_px = dets[0]
     assert abs(cx - 320) < 10, f"cx={cx}"
     assert abs(cy - 240) < 10, f"cy={cy}"
     assert area > 8000, f"area={area}"
@@ -189,7 +189,7 @@ def test_tomato_finds_round_red():
     img = _draw_circle_bgr((480, 640), (320, 240), 50, (0, 0, 220))
     dets = _detect_tomato_contours(img)
     assert len(dets) == 1, f"expected 1 tomato, got {len(dets)}"
-    (cx, cy), area, bbox, conf = dets[0]
+    (cx, cy), area, bbox, conf, _green_px = dets[0]
     assert abs(cx - 320) < 5
     assert abs(cy - 240) < 5
     assert area > 7000, f"area={area}"
@@ -248,7 +248,7 @@ def test_strawberry_finds_tapered_red_with_calyx():
     img = _draw_strawberry_bgr((480, 640), (320, 240), 60, 70)
     dets = _detect_strawberry_contours(img)
     assert len(dets) == 1, f"expected 1 strawberry, got {len(dets)}"
-    (cx, cy), area, bbox, conf = dets[0]
+    (cx, cy), area, bbox, conf, _green_px = dets[0]
     assert abs(cx - 320) < 10
     assert conf > 0.3
 

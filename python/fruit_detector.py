@@ -24,6 +24,11 @@ class Detection:
     confidence: float            # 0..1
     area_px: int
     bbox: tuple                  # (x, y, w, h) — opencv convention
+    # XY unit vector in base frame pointing from the red centroid toward
+    # the calyx centroid. Strawberry-only and only when green pixels were
+    # actually found; banana/tomato leave this as None. Consumed by
+    # picker_viewer._pick_one to bias the pick toward the wide body.
+    calyx_dir_base_unit: np.ndarray | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -33,6 +38,9 @@ class Detection:
             "confidence": float(self.confidence),
             "area_px": int(self.area_px),
             "bbox": list(self.bbox),
+            "calyx_dir_base_unit": (None if self.calyx_dir_base_unit is None
+                                    else np.asarray(
+                                        self.calyx_dir_base_unit).tolist()),
         }
 
 
@@ -123,7 +131,7 @@ def _detect_banana_contours(bgr: np.ndarray) -> list:
         aspect_score = 0.5 + min(0.5, (aspect - _BANANA_MIN_ASPECT) / 2.0)
         hits.append(((int(cx), int(cy)), int(area),
                      (int(x), int(y), int(w_b), int(h_b)),
-                     float(aspect_score)))
+                     float(aspect_score), None))
     return hits
 
 
@@ -234,7 +242,7 @@ def _detect_tomato_contours(bgr: np.ndarray) -> list:
         cy = int(M["m01"] / M["m00"])
         conf = float(min(1.0, circ) * (1.0 - green_ratio))
         hits.append(((cx, cy), int(area),
-                     (int(x), int(y), int(w_b), int(h_b)), conf))
+                     (int(x), int(y), int(w_b), int(h_b)), conf, None))
     return hits
 
 
@@ -309,10 +317,36 @@ def _detect_strawberry_contours(bgr: np.ndarray) -> list:
         calyx_conf = float(min(1.0, calyx_ratio * 3.0))
         shape_conf = 0.5 if shape_signal else 0.0
         conf = max(calyx_conf, shape_conf)
+        # Calyx pixel centroid for the pick-bias step. Search a padded
+        # region around the bbox so above-bbox calyx (the standard
+        # upright orientation) is also captured. None if green_calyx
+        # mask is empty in the region (shape-only strawberry).
+        green_px = _calyx_centroid_px(bgr, (x, y, w_b, h_b))
         hits.append(((cx, cy), int(area),
                      (int(x), int(y), int(w_b), int(h_b)),
-                     conf))
+                     conf, green_px))
     return hits
+
+
+def _calyx_centroid_px(bgr: np.ndarray, bbox: tuple,
+                         pad: int = 25) -> tuple | None:
+    """Return (gcx, gcy) image-space centroid of green pixels in the
+    bbox + padding. None if no green pixels found."""
+    x, y, w, h = bbox
+    y0 = max(0, y - pad)
+    y1 = min(bgr.shape[0], y + h + pad)
+    x0 = max(0, x - pad)
+    x1 = min(bgr.shape[1], x + w + pad)
+    region = bgr[y0:y1, x0:x1]
+    if region.size == 0:
+        return None
+    green_mask = hsv_mask(region, HSV_RANGES["green_calyx"])
+    rows, cols = np.where(green_mask > 0)
+    if rows.size == 0:
+        return None
+    gcx = float(x0 + cols.mean())
+    gcy = float(y0 + rows.mean())
+    return (gcx, gcy)
 
 
 _DEPTH_MIN_VALID = 8       # min valid samples in the patch
@@ -438,7 +472,7 @@ def detect_fruits(color_bgr: np.ndarray, depth_mm: np.ndarray,
         ("strawberry", _detect_strawberry_contours),
     ]
     for fruit_type, fn in per_class:
-        for (cx, cy), area, bbox, conf in fn(color_bgr):
+        for (cx, cy), area, bbox, conf, green_px in fn(color_bgr):
             if conf < CONFIDENCE_MIN:
                 continue
             top_z_mm = _resolve_top_z(
@@ -448,6 +482,17 @@ def detect_fruits(color_bgr: np.ndarray, depth_mm: np.ndarray,
                     (cx, cy), top_z_mm, session_cal)
             except ValueError:
                 continue
+            calyx_dir = None
+            if green_px is not None:
+                try:
+                    green_xyz = pixel_to_base_frame(
+                        green_px, top_z_mm, session_cal)
+                    diff = green_xyz[:2] - xyz_base[:2]
+                    norm = float(np.linalg.norm(diff))
+                    if norm > 1e-4:
+                        calyx_dir = diff / norm
+                except ValueError:
+                    pass
             results.append(Detection(
                 fruit_type=fruit_type,
                 center_px=(int(cx), int(cy)),
@@ -455,5 +500,6 @@ def detect_fruits(color_bgr: np.ndarray, depth_mm: np.ndarray,
                 confidence=float(conf),
                 area_px=int(area),
                 bbox=tuple(int(v) for v in bbox),
+                calyx_dir_base_unit=calyx_dir,
             ))
     return results
