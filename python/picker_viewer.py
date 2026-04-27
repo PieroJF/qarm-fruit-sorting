@@ -183,6 +183,16 @@ _STRAWBERRY_CALYX_BIAS_M = 0.02   # empirical 2026-04-27 (re-added after
                                    # lands the gripper better-centred on
                                    # the body. Banana/tomato unaffected.
 
+_STRAWBERRY_X_BIAS_M = -0.02      # empirical 2026-04-27: strawberry picks
+                                   # were landing too far from the base
+                                   # (the global PICK_BIAS_X = +5cm in
+                                   # the controller was over-correcting
+                                   # for strawberries). Negative shifts
+                                   # the target toward the base in the
+                                   # base-frame x axis. Net effective
+                                   # x bias for strawberry = +5cm - 2cm
+                                   # = +3cm. Banana/tomato keep +5cm.
+
 
 def _pick_one(controller, detection, camera=None, window=None) -> bool:
     """Dispatch one synchronous pick. Returns True on success.
@@ -194,14 +204,16 @@ def _pick_one(controller, detection, camera=None, window=None) -> bool:
     the previous tick_observer is restored.
     """
     target = np.asarray(detection.center_base_m, dtype=float).copy()
-    if (detection.fruit_type == "strawberry"
-            and detection.calyx_dir_base_unit is not None):
-        target[:2] += _STRAWBERRY_CALYX_BIAS_M * np.asarray(
-            detection.calyx_dir_base_unit, dtype=float)
+    if detection.fruit_type == "strawberry":
+        if detection.calyx_dir_base_unit is not None:
+            target[:2] += _STRAWBERRY_CALYX_BIAS_M * np.asarray(
+                detection.calyx_dir_base_unit, dtype=float)
+        target[0] += _STRAWBERRY_X_BIAS_M
         print(f"  [picker] picking {detection.fruit_type} at "
               f"{target.round(3)} (widest-point "
               f"{detection.center_base_m.round(3)} + "
-              f"{_STRAWBERRY_CALYX_BIAS_M*100:.1f}cm calyx bias, "
+              f"{_STRAWBERRY_CALYX_BIAS_M*100:.1f}cm calyx bias + "
+              f"{_STRAWBERRY_X_BIAS_M*100:+.1f}cm x bias, "
               f"conf={detection.confidence:.2f})")
     else:
         print(f"  [picker] picking {detection.fruit_type} at "
