@@ -60,6 +60,14 @@ class FruitSortingController:
                            # 2026-04-23 briefly tried 0.04 but FSM's Cartesian
                            # quintic stalls in singular joint space at low z;
                            # 0.02 was the value diag_pick_one used successfully.
+
+    # Per-fruit-type pick-depth overrides. The default PICK_OFFSET +
+    # PICK_Z apply unless overridden here. Strawberry descends a touch
+    # deeper into the body so the gripper jaws cradle the wide section
+    # rather than skimming the top of the soft skin and slipping off.
+    PICK_DEPTH_OVERRIDES = {
+        "strawberry": {"pick_offset": 0.03, "pick_z_floor": 0.015},
+    }
     PLACE_Z = 0.10
 
     # Timing
@@ -280,7 +288,9 @@ class FruitSortingController:
             approach_pos[2] = self.APPROACH_Z
             # Pre-validate IK on approach and pick positions — skip unreachable
             pick_pos_chk = self.current_target['pos'].copy()
-            pick_pos_chk[2] = self._compute_pick_z(self.current_target['pos'])
+            pick_pos_chk[2] = self._compute_pick_z(
+                self.current_target['pos'],
+                fruit_type=self.current_target['type'])
             if self._ik_safe(approach_pos) is None or \
                self._ik_safe(pick_pos_chk) is None:
                 self._print_state(
@@ -302,7 +312,9 @@ class FruitSortingController:
         elif self.state == State.APPROACH:
             if self._track_trajectory(t, gripper_val=GRIP_OPEN):
                 pick_pos = self.current_target['pos'].copy()
-                pick_pos[2] = self._compute_pick_z(self.current_target['pos'])
+                pick_pos[2] = self._compute_pick_z(
+                    self.current_target['pos'],
+                    fruit_type=self.current_target['type'])
                 self._start_move(ee_pos, pick_pos, self.T_PICK)
                 self.state = State.DESCEND
                 self._print_state(f"Descending to pick (z={pick_pos[2]:.3f})")
@@ -461,11 +473,15 @@ class FruitSortingController:
         self.qarm.set_joints_and_gripper(joints, gripper_val)
         return False
 
-    def _compute_pick_z(self, fruit_xyz):
-        """Z to descend to for a pick, clamped to the PICK_Z absolute floor.
+    def _compute_pick_z(self, fruit_xyz, fruit_type=None):
+        """Z to descend to for a pick, clamped to the per-type floor.
         PICK_OFFSET = how far below the fruit centroid we aim so the gripper
-        straddles the fruit rather than closing on thin air above it."""
-        return max(self.PICK_Z, float(fruit_xyz[2]) - self.PICK_OFFSET)
+        straddles the fruit rather than closing on thin air above it.
+        Per-fruit-type overrides live in PICK_DEPTH_OVERRIDES."""
+        overrides = self.PICK_DEPTH_OVERRIDES.get(fruit_type, {})
+        offset = overrides.get("pick_offset", self.PICK_OFFSET)
+        floor = overrides.get("pick_z_floor", self.PICK_Z)
+        return max(floor, float(fruit_xyz[2]) - offset)
 
     def _start_grip_interp(self, target, duration=None):
         """Begin a smooth gripper open/close interpolation from the current
@@ -596,7 +612,7 @@ def stateflow_select(joints_cur):
         target = c.fruit_queue[0]
         approach = target['pos'].copy(); approach[2] = c.APPROACH_Z
         pick = target['pos'].copy()
-        pick[2] = c._compute_pick_z(target['pos'])
+        pick[2] = c._compute_pick_z(target['pos'], fruit_type=target['type'])
         if c._ik_safe(approach) is None or c._ik_safe(pick) is None:
             c.fruit_queue.pop(0)
             if c.logger: c.logger.log("PRE_FLIGHT_SKIP",
