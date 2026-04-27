@@ -1,5 +1,7 @@
 """Tests for picker_viewer pure helpers."""
 import os, sys
+import time
+import cv2
 import numpy as np
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -118,11 +120,151 @@ def test_pick_category_skips_stuck_target():
     return name, True, "stuck target terminated without hang"
 
 
+def test_live_feed_populates_latest_then_stops():
+    name = "live_feed_populates_latest_then_stops"
+
+    class _StubCam:
+        def __init__(self):
+            self.calls = 0
+        def read(self):
+            self.calls += 1
+            return (np.full((720, 1280, 3), self.calls % 256, dtype=np.uint8),
+                    np.zeros((720, 1280), dtype=np.uint16))
+
+    from picker_viewer import _LiveFeed
+    cam = _StubCam()
+    feed = _LiveFeed(cam)
+    feed.start()
+    deadline = time.time() + 0.5
+    frame = None
+    while time.time() < deadline:
+        frame = feed.latest()
+        if frame is not None:
+            break
+        time.sleep(0.01)
+    feed.stop()
+    assert frame is not None, "latest() returned None within 500 ms"
+    assert frame.shape == (720, 1280, 3), f"shape = {frame.shape}"
+    assert feed._thread is None, "stop() did not clear thread"
+    return name, True, f"latest shape={frame.shape}, cam.calls={cam.calls}"
+
+
+def test_render_observer_throttles_and_overlays_state():
+    name = "render_observer_throttles_and_overlays_state"
+
+    captured = {"imshow": [], "waitKey": 0}
+    orig_imshow = cv2.imshow
+    orig_waitKey = cv2.waitKey
+    cv2.imshow = lambda w, f: captured["imshow"].append((w, f.shape))
+    cv2.waitKey = lambda d: (captured.__setitem__("waitKey",
+                                                  captured["waitKey"] + 1)
+                             or 0)
+    try:
+        from picker_viewer import _make_render_observer
+
+        class _Feed:
+            def latest(self):
+                return np.zeros((720, 1280, 3), dtype=np.uint8)
+
+        class _Ctrl:
+            class state:
+                name = "DESCEND"
+            current_target = {"type": "tomato",
+                              "pos": np.array([0.4, 0.1, 0.05])}
+
+        observer = _make_render_observer(
+            _Feed(), "win", _Ctrl(), fps_limit=30.0)
+        observer()                  # first call: renders
+        observer()                  # immediate: throttled
+        time.sleep(0.05)            # > 1/30 s
+        observer()                  # third call: renders again
+        assert len(captured["imshow"]) == 2, \
+            f"expected 2 renders, got {len(captured['imshow'])}"
+        assert captured["imshow"][0][0] == "win"
+        assert captured["imshow"][0][1] == (720, 1280, 3)
+        assert captured["waitKey"] == 2
+    finally:
+        cv2.imshow = orig_imshow
+        cv2.waitKey = orig_waitKey
+    return name, True, f"{len(captured['imshow'])} renders, "\
+                        f"{captured['waitKey']} waitKeys"
+
+
+def test_render_observer_handles_none_target():
+    name = "render_observer_handles_none_target"
+    orig_imshow = cv2.imshow
+    orig_waitKey = cv2.waitKey
+    cv2.imshow = lambda w, f: None
+    cv2.waitKey = lambda d: 0
+    try:
+        from picker_viewer import _make_render_observer
+
+        class _Feed:
+            def latest(self):
+                return np.zeros((720, 1280, 3), dtype=np.uint8)
+
+        class _Ctrl:
+            class state:
+                name = "GO_HOME"
+            current_target = None
+
+        observer = _make_render_observer(_Feed(), "win", _Ctrl())
+        observer()  # must not raise
+    finally:
+        cv2.imshow = orig_imshow
+        cv2.waitKey = orig_waitKey
+    return name, True, "no exception with current_target=None"
+
+
+def test_pick_one_starts_and_clears_observer_when_camera_provided():
+    name = "pick_one_lifecycle_with_camera"
+
+    class _StubCam:
+        def read(self):
+            return (np.zeros((720, 1280, 3), dtype=np.uint8),
+                    np.zeros((720, 1280), dtype=np.uint16))
+
+    class _StubCtrl:
+        def __init__(self):
+            self.tick_observer = None
+            self.observer_during_pick = "UNSET"
+            self.calls = []
+            class _State: name = "GO_HOME"
+            self.state = _State()
+            self.current_target = None
+
+        def pick_single(self, xyz, ftype):
+            self.observer_during_pick = self.tick_observer
+            self.calls.append((tuple(xyz), ftype))
+            return True
+
+    from picker_viewer import _pick_one
+    from fruit_detector import Detection
+
+    det = Detection(fruit_type="tomato", center_px=(640, 360),
+                     center_base_m=np.array([0.4, 0.0, 0.05]),
+                     confidence=0.8, area_px=1000, bbox=(620, 340, 40, 40))
+    ctrl = _StubCtrl()
+    cam = _StubCam()
+    ok = _pick_one(ctrl, det, camera=cam, window="win")
+    assert ok, "stub pick_single returned True so _pick_one should too"
+    assert ctrl.observer_during_pick is not None, \
+        "tick_observer was not set during pick_single"
+    assert ctrl.tick_observer is None, \
+        "tick_observer not restored after pick_single returned"
+    assert ctrl.calls == [((0.4, 0.0, 0.05), "tomato")]
+    return name, True, "observer set during pick, cleared after"
+
+
 TESTS = [
     test_filter_by_type,
     test_annotate_returns_image_same_shape, test_hud_text_contains_counts,
     test_pick_one_calls_controller,
     test_pick_category_skips_stuck_target,
+    test_live_feed_populates_latest_then_stops,
+    test_render_observer_throttles_and_overlays_state,
+    test_render_observer_handles_none_target,
+    test_pick_one_starts_and_clears_observer_when_camera_provided,
 ]
 
 

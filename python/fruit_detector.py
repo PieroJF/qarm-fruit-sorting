@@ -24,6 +24,11 @@ class Detection:
     confidence: float            # 0..1
     area_px: int
     bbox: tuple                  # (x, y, w, h) — opencv convention
+    # XY unit vector in base frame pointing from the red centroid toward
+    # the calyx centroid. Strawberry-only and only when green pixels were
+    # actually found; banana/tomato leave this as None. Consumed by
+    # picker_viewer._pick_one to bias the pick toward the wide body.
+    calyx_dir_base_unit: np.ndarray | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -33,6 +38,9 @@ class Detection:
             "confidence": float(self.confidence),
             "area_px": int(self.area_px),
             "bbox": list(self.bbox),
+            "calyx_dir_base_unit": (None if self.calyx_dir_base_unit is None
+                                    else np.asarray(
+                                        self.calyx_dir_base_unit).tolist()),
         }
 
 
@@ -48,7 +56,7 @@ HSV_RANGES = {
                     "s": [80, 255], "v": [40, 255]},
     "strawberry":  {"h_wrap1": [0, 10],  "h_wrap2": [170, 180],
                     "s": [80, 255], "v": [40, 255]},
-    "green_calyx": {"h": [20, 90],  "s": [60, 255], "v": [15, 255]},  # widened 2026-04-22: lab lighting makes strawberry leaves dark olive (V ~15-40, H ~20-35) rather than bright green
+    "green_calyx": {"h": [15, 90],  "s": [30, 255], "v": [15, 255]},  # widened 2026-04-27: prior s>=60 missed dim leaves entirely (every diag contour reported 0.0); prior h>=20 missed yellowed/dying calyx leaves whose hue falls into the orange-yellow range (H~15-20). H=15 still excludes red (H<10) so cross-class HSV stays clean.
 }
 
 _OPEN_KERNEL = np.ones((5, 5), np.uint8)
@@ -93,7 +101,7 @@ def hsv_mask(bgr: np.ndarray, ranges: dict) -> np.ndarray:
 # The top-level detect_fruits() wraps these into Detection objects with
 # base-frame coordinates.
 # ------------------------------------------------------------------------
-_BANANA_MIN_AREA = 800
+_BANANA_MIN_AREA = 5000     # raised 2026-04-27 from 800: yellowed/dim strawberry calyx leaves fall into banana HSV (H 14-40, S 80+, V 60+) and have leaf-elongated shape that passes the aspect gate; they show up as ~1-3k px ghost bananas sitting on the strawberry's head. Real bananas at survey1 distance are 20k-50k px so 5000 is a safe floor with 4x margin.
 _BANANA_MAX_AREA = 80000   # widened 2026-04-22 for survey1 ~33 cm: close-up bananas reach ~50k px
 _BANANA_MIN_ASPECT = 1.5   # loosened 2026-04-22: overhead view of a curved banana has aspect ~1.5-2.0; orange-yellow non-banana items are rare on the lab table
 
@@ -123,7 +131,7 @@ def _detect_banana_contours(bgr: np.ndarray) -> list:
         aspect_score = 0.5 + min(0.5, (aspect - _BANANA_MIN_ASPECT) / 2.0)
         hits.append(((int(cx), int(cy)), int(area),
                      (int(x), int(y), int(w_b), int(h_b)),
-                     float(aspect_score)))
+                     float(aspect_score), None))
     return hits
 
 
@@ -168,6 +176,38 @@ def _has_green_in_top_strip(bgr: np.ndarray, bbox: tuple,
     return float((green_mask > 0).mean())
 
 
+def _has_green_anywhere_in_bbox(bgr: np.ndarray, bbox: tuple) -> float:
+    """Fraction of green pixels anywhere inside the bbox.
+
+    Overhead camera + free-orientation strawberries means the calyx
+    can be on any side (including the bottom). Top-strip / above-band
+    checks both miss those. This catches them, at the cost of being
+    susceptible to background leak into the axis-aligned bbox corners
+    — which is acceptable because real tomatoes have no green
+    anywhere near them in this workspace."""
+    x, y, w, h = bbox
+    region = bgr[y:y + h, x:x + w]
+    if region.size == 0:
+        return 0.0
+    green_mask = hsv_mask(region, HSV_RANGES["green_calyx"])
+    return float((green_mask > 0).mean())
+
+
+def _calyx_signal(bgr: np.ndarray, bbox: tuple) -> float:
+    """Strongest evidence of a green calyx anywhere in / above the bbox.
+
+    Used by BOTH the strawberry positive gate and the tomato
+    rejection gate so the two classes stay mutually exclusive on
+    the green criterion (otherwise a contour with a small calyx
+    visible only in top_strip could pass tomato AND strawberry,
+    producing two Detection records on the same blob)."""
+    return max(
+        _has_green_above(bgr, bbox),
+        _has_green_in_top_strip(bgr, bbox),
+        _has_green_anywhere_in_bbox(bgr, bbox),
+    )
+
+
 def _detect_tomato_contours(bgr: np.ndarray) -> list:
     mask = hsv_mask(bgr, HSV_RANGES["tomato"])
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
@@ -192,7 +232,7 @@ def _detect_tomato_contours(bgr: np.ndarray) -> list:
             aspect = max(w_b, h_b) / min(w_b, h_b)
             if aspect > _TOMATO_MAX_ASPECT:
                 continue
-        green_ratio = _has_green_above(bgr, (x, y, w_b, h_b))
+        green_ratio = _calyx_signal(bgr, (x, y, w_b, h_b))
         if green_ratio > _GREEN_ABOVE_RATIO:
             continue
         M = cv2.moments(c)
@@ -202,13 +242,14 @@ def _detect_tomato_contours(bgr: np.ndarray) -> list:
         cy = int(M["m01"] / M["m00"])
         conf = float(min(1.0, circ) * (1.0 - green_ratio))
         hits.append(((cx, cy), int(area),
-                     (int(x), int(y), int(w_b), int(h_b)), conf))
+                     (int(x), int(y), int(w_b), int(h_b)), conf, None))
     return hits
 
 
-_STRAWBERRY_MIN_AREA = 200
+_STRAWBERRY_MIN_AREA = 1500       # raised 2026-04-27 from 200: gripper edges and red specks at frame edges (areas 200-600 px) were passing the new shape signal (circ < 0.4) and showing up as ghost strawberries. Real lab strawberries at survey1 distance are 20k+ px, so 1500 (= _TOMATO_MIN_AREA) gives a 14x safety margin.
 _STRAWBERRY_MAX_AREA = 40000      # widened 2026-04-22: close-up strawberries reach ~30k px at survey1 distance
 _STRAWBERRY_MIN_CALYX = 0.05     # same threshold as tomato's rejection band
+_STRAWBERRY_MAX_CIRC = 0.4       # added 2026-04-27: when calyx is not visible (camera-facing-away orientation, brown/dim leaves), an irregular shape (circ < 0.4) is itself a strawberry signal. Set equal to _TOMATO_MIN_CIRCULARITY so the two classes never overlap on the shape axis (tomato accepts circ >= 0.4, strawberry shape-signal fires at circ < 0.4).
 
 
 def _taper_score(contour, bbox) -> float:
@@ -233,6 +274,30 @@ def _taper_score(contour, bbox) -> float:
     return float(top_w) / float(max(1, bot_w))
 
 
+def _widest_point_centroid(contour, bgr_shape) -> tuple | None:
+    """Pixel that lies furthest from any contour edge — the centre of the
+    largest inscribed disk. For a teardrop strawberry this lands inside
+    the WIDE body, not at the moments centroid which gets pulled toward
+    the narrow tip. For circles it falls near the geometric centre.
+    Returns None if the contour has no interior pixels."""
+    H, W = bgr_shape[:2]
+    x, y, w, h = cv2.boundingRect(contour)
+    x0 = max(0, x - 1); y0 = max(0, y - 1)
+    x1 = min(W, x + w + 1); y1 = min(H, y + h + 1)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    mask = np.zeros((y1 - y0, x1 - x0), dtype=np.uint8)
+    shifted = contour.copy()
+    shifted[:, :, 0] -= x0
+    shifted[:, :, 1] -= y0
+    cv2.drawContours(mask, [shifted], -1, 255, thickness=-1)
+    if int(mask.sum()) == 0:
+        return None
+    dist = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+    yi, xi = np.unravel_index(int(np.argmax(dist)), dist.shape)
+    return (x0 + int(xi), y0 + int(yi))
+
+
 def _detect_strawberry_contours(bgr: np.ndarray) -> list:
     mask = hsv_mask(bgr, HSV_RANGES["strawberry"])
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
@@ -243,10 +308,17 @@ def _detect_strawberry_contours(bgr: np.ndarray) -> list:
         if area < _STRAWBERRY_MIN_AREA or area > _STRAWBERRY_MAX_AREA:
             continue
         x, y, w_b, h_b = cv2.boundingRect(c)
-        above_ratio = _has_green_above(bgr, (x, y, w_b, h_b))
-        top_strip_ratio = _has_green_in_top_strip(bgr, (x, y, w_b, h_b))
-        calyx_ratio = max(above_ratio, top_strip_ratio)
-        if calyx_ratio <= _STRAWBERRY_MIN_CALYX:
+        calyx_ratio = _calyx_signal(bgr, (x, y, w_b, h_b))
+        # Shape signal: low circularity (irregular shape) is a positive
+        # strawberry indicator since tomato is always round (>= 0.4 by
+        # _TOMATO_MIN_CIRCULARITY). Used as a fallback when the calyx
+        # green is not detectable in this contour's bbox.
+        perim = float(cv2.arcLength(c, True))
+        if perim < 1:
+            continue
+        circ = 4 * np.pi * area / (perim * perim)
+        shape_signal = circ < _STRAWBERRY_MAX_CIRC
+        if calyx_ratio <= _STRAWBERRY_MIN_CALYX and not shape_signal:
             continue
         taper = _taper_score(c, (x, y, w_b, h_b))
         # Widened 2026-04-22: in overhead view (camera nearly nadir) the
@@ -257,18 +329,50 @@ def _detect_strawberry_contours(bgr: np.ndarray) -> list:
         # segmentation artifacts).
         if taper < 0.3 or taper > 3.5:
             continue
-        M = cv2.moments(c)
-        if M["m00"] <= 0:
+        # Use the widest-inscribed-disk centre rather than the mass
+        # centroid so the gripper targets the WIDE body of a teardrop
+        # strawberry rather than a point biased toward the narrow tip.
+        widest = _widest_point_centroid(c, bgr.shape)
+        if widest is None:
             continue
-        cx = int(M["m10"] / M["m00"])
-        cy = int(M["m01"] / M["m00"])
-        # Confidence driven mostly by calyx; taper gate is binary.
-        # No floor — CONFIDENCE_MIN is the authoritative gate.
-        conf = float(min(1.0, calyx_ratio * 3.0))
+        cx, cy = widest
+        # Confidence: prefer calyx evidence (continuous), use shape as
+        # a mid-confidence floor when only shape says strawberry. Both
+        # paths are independently sufficient and CONFIDENCE_MIN is the
+        # final gate.
+        calyx_conf = float(min(1.0, calyx_ratio * 3.0))
+        shape_conf = 0.5 if shape_signal else 0.0
+        conf = max(calyx_conf, shape_conf)
+        # Calyx pixel centroid for the pick-bias step. Search a padded
+        # region around the bbox so above-bbox calyx (the standard
+        # upright orientation) is also captured. None if green_calyx
+        # mask is empty in the region (shape-only strawberry).
+        green_px = _calyx_centroid_px(bgr, (x, y, w_b, h_b))
         hits.append(((cx, cy), int(area),
                      (int(x), int(y), int(w_b), int(h_b)),
-                     conf))
+                     conf, green_px))
     return hits
+
+
+def _calyx_centroid_px(bgr: np.ndarray, bbox: tuple,
+                         pad: int = 25) -> tuple | None:
+    """Return (gcx, gcy) image-space centroid of green pixels in the
+    bbox + padding. None if no green pixels found."""
+    x, y, w, h = bbox
+    y0 = max(0, y - pad)
+    y1 = min(bgr.shape[0], y + h + pad)
+    x0 = max(0, x - pad)
+    x1 = min(bgr.shape[1], x + w + pad)
+    region = bgr[y0:y1, x0:x1]
+    if region.size == 0:
+        return None
+    green_mask = hsv_mask(region, HSV_RANGES["green_calyx"])
+    rows, cols = np.where(green_mask > 0)
+    if rows.size == 0:
+        return None
+    gcx = float(x0 + cols.mean())
+    gcy = float(y0 + rows.mean())
+    return (gcx, gcy)
 
 
 _DEPTH_MIN_VALID = 8       # min valid samples in the patch
@@ -394,7 +498,7 @@ def detect_fruits(color_bgr: np.ndarray, depth_mm: np.ndarray,
         ("strawberry", _detect_strawberry_contours),
     ]
     for fruit_type, fn in per_class:
-        for (cx, cy), area, bbox, conf in fn(color_bgr):
+        for (cx, cy), area, bbox, conf, green_px in fn(color_bgr):
             if conf < CONFIDENCE_MIN:
                 continue
             top_z_mm = _resolve_top_z(
@@ -404,6 +508,17 @@ def detect_fruits(color_bgr: np.ndarray, depth_mm: np.ndarray,
                     (cx, cy), top_z_mm, session_cal)
             except ValueError:
                 continue
+            calyx_dir = None
+            if green_px is not None:
+                try:
+                    green_xyz = pixel_to_base_frame(
+                        green_px, top_z_mm, session_cal)
+                    diff = green_xyz[:2] - xyz_base[:2]
+                    norm = float(np.linalg.norm(diff))
+                    if norm > 1e-4:
+                        calyx_dir = diff / norm
+                except ValueError:
+                    pass
             results.append(Detection(
                 fruit_type=fruit_type,
                 center_px=(int(cx), int(cy)),
@@ -411,5 +526,6 @@ def detect_fruits(color_bgr: np.ndarray, depth_mm: np.ndarray,
                 confidence=float(conf),
                 area_px=int(area),
                 bbox=tuple(int(v) for v in bbox),
+                calyx_dir_base_unit=calyx_dir,
             ))
     return results

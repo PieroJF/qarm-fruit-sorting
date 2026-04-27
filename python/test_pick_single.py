@@ -47,9 +47,36 @@ def test_pick_single_twice_accumulates():
     return name, True, "two back-to-back picks sorted_count==2"
 
 
+def test_pick_single_invokes_tick_observer():
+    name = "pick_single_invokes_tick_observer"
+    q = MockQArm()
+    c = _compressed(FruitSortingController(q, pick_only=True))
+    counter = {"n": 0}
+    c.tick_observer = lambda: counter.__setitem__("n", counter["n"] + 1)
+    ok = c.pick_single(np.array([0.35, 0.10, 0.13]), "strawberry", dt=0.001)
+    assert ok, "pick_single returned False"
+    assert counter["n"] >= 5, f"observer not called enough: n={counter['n']}"
+    return name, True, f"observer fired {counter['n']} times"
+
+
+def test_tick_observer_exception_does_not_crash_fsm():
+    name = "tick_observer_exception_isolated"
+    q = MockQArm()
+    c = _compressed(FruitSortingController(q, pick_only=True))
+    def _bad():
+        raise RuntimeError("display blew up")
+    c.tick_observer = _bad
+    ok = c.pick_single(np.array([0.35, 0.10, 0.13]), "strawberry", dt=0.001)
+    assert ok, "pick_single should still complete despite observer raising"
+    assert c.sorted_count == 1
+    return name, True, "observer error swallowed; FSM completed"
+
+
 TESTS = [test_pick_single_reachable_returns_true,
          test_pick_single_unreachable_returns_false,
-         test_pick_single_twice_accumulates]
+         test_pick_single_twice_accumulates,
+         test_pick_single_invokes_tick_observer,
+         test_tick_observer_exception_does_not_crash_fsm]
 
 
 def main():

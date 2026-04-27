@@ -9,6 +9,8 @@ unit-tested.
 from __future__ import annotations
 import os
 import sys
+import threading
+import time
 import traceback
 
 import numpy as np
@@ -73,7 +75,97 @@ def _hud_text(n_fruits, residual_mm, mode):
     r = f"{residual_mm:.1f}" if residual_mm is not None else "n/a"
     return (f"{n_fruits} fruits  |  residual {r} mm  |  "
             f"mode: {mode}  |  b=banana  t=tomato  s=strawberry  "
-            f"r=refresh  ESC=quit")
+            f"m=all  r=refresh  ESC=quit")
+
+
+# ------------------------------------------------------------------------
+# Live camera feed (used during arm motion to keep the picker window from
+# freezing). The feed is the SOLE reader of QArmCamera while it runs
+# because camera.read() shares internal buffers (camera.py:50-55, 168-174)
+# and is not thread-safe. Callers MUST stop()+join the feed before any
+# other code touches the camera.
+# ------------------------------------------------------------------------
+
+class _LiveFeed:
+    def __init__(self, camera):
+        self._cam = camera
+        self._latest = None
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = None
+
+    def start(self):
+        if self._thread is not None:
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def stop(self, timeout=2.0):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+            self._thread = None
+
+    def latest(self):
+        with self._lock:
+            return None if self._latest is None else self._latest.copy()
+
+    def _loop(self):
+        while not self._stop.is_set():
+            try:
+                color, _ = self._cam.read()
+                with self._lock:
+                    self._latest = color
+            except Exception:
+                # Camera blip: keep last frame, retry next iteration.
+                pass
+
+
+def _make_render_observer(feed, window, controller, fps_limit=30.0):
+    """Closure suitable for FruitSortingController.tick_observer.
+
+    Reads the latest frame from `feed`, draws a status overlay derived
+    from controller.state.name and controller.current_target, and shows
+    it in `window`. Throttled to fps_limit so the FSM tick budget is
+    not consumed by GUI work (cv2.imshow + waitKey costs ~1-3 ms; at
+    100 Hz dt that would eat 10-30% of the loop). Uses time.monotonic()
+    for the gate so a wall-clock NTP/DST jump cannot break the throttle."""
+    last = {"t": 0.0}
+    period = 1.0 / float(fps_limit)
+
+    def _render():
+        now = time.monotonic()
+        if now - last["t"] < period:
+            return
+        last["t"] = now
+        frame = feed.latest()
+        if frame is None:
+            return
+        out = frame.copy()
+        try:
+            sname = controller.state.name
+        except Exception:
+            sname = "?"
+        target = getattr(controller, "current_target", None)
+        if target is not None:
+            ftype = target.get("type", "?") if isinstance(target, dict) \
+                else "?"
+            pos = target.get("pos") if isinstance(target, dict) else None
+            if pos is not None and len(pos) >= 3:
+                label = (f"PICKING {ftype} @ "
+                         f"({pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f}) | "
+                         f"state: {sname}")
+            else:
+                label = f"PICKING {ftype} | state: {sname}"
+        else:
+            label = f"state: {sname}"
+        cv2.putText(out, label, (10, 28), cv2.FONT_HERSHEY_SIMPLEX,
+                     0.6, (0, 255, 255), 2, cv2.LINE_AA)
+        cv2.imshow(window, out)
+        cv2.waitKey(1)
+
+    return _render
 
 
 # ------------------------------------------------------------------------
@@ -83,19 +175,73 @@ def _hud_text(n_fruits, residual_mm, mode):
 MAX_CATEGORY_PICKS = 20
 RETRY_LIMIT_PER_TARGET = 2
 
+_STRAWBERRY_CALYX_BIAS_M = 0.02   # empirical 2026-04-27 (re-added after
+                                   # switching to widest-inscribed-disk
+                                   # centroid): even with the centroid
+                                   # already pulled into the wide body,
+                                   # nudging another 2cm toward the calyx
+                                   # lands the gripper better-centred on
+                                   # the body. Banana/tomato unaffected.
 
-def _pick_one(controller, detection) -> bool:
-    """Dispatch one synchronous pick. Returns True on success."""
-    print(f"  [picker] picking {detection.fruit_type} at "
-          f"{detection.center_base_m.round(3)} "
-          f"(conf={detection.confidence:.2f})")
+_STRAWBERRY_X_BIAS_M = -0.030     # empirical 2026-04-27: strawberry picks
+                                   # were landing too far from the base
+                                   # (the global PICK_BIAS_X = +5cm in
+                                   # the controller was over-correcting
+                                   # for strawberries). Negative shifts
+                                   # the target toward the base in the
+                                   # base-frame x axis. Iterations -2cm
+                                   # -> -3.5cm -> -2.5cm -> -3.0cm in
+                                   # the same lab session (-3.5 over-
+                                   # corrected, -2.5 went 1cm too far
+                                   # away from base, -3.0 is the 0.5cm
+                                   # midpoint). Net effective x bias
+                                   # for strawberry = +5cm - 3.0cm
+                                   # = +2.0cm. Banana / tomato keep the
+                                   # full +5cm.
+
+
+def _pick_one(controller, detection, camera=None, window=None) -> bool:
+    """Dispatch one synchronous pick. Returns True on success.
+
+    If both `camera` and `window` are given, runs a live D415 feed
+    overlay during the arm motion via controller.tick_observer.
+    The feed is the sole reader of `camera` for its lifetime; on
+    return (success or exception) the feed is stopped + joined and
+    the previous tick_observer is restored.
+    """
+    target = np.asarray(detection.center_base_m, dtype=float).copy()
+    if detection.fruit_type == "strawberry":
+        if detection.calyx_dir_base_unit is not None:
+            target[:2] += _STRAWBERRY_CALYX_BIAS_M * np.asarray(
+                detection.calyx_dir_base_unit, dtype=float)
+        target[0] += _STRAWBERRY_X_BIAS_M
+        print(f"  [picker] picking {detection.fruit_type} at "
+              f"{target.round(3)} (widest-point "
+              f"{detection.center_base_m.round(3)} + "
+              f"{_STRAWBERRY_CALYX_BIAS_M*100:.1f}cm calyx bias + "
+              f"{_STRAWBERRY_X_BIAS_M*100:+.1f}cm x bias, "
+              f"conf={detection.confidence:.2f})")
+    else:
+        print(f"  [picker] picking {detection.fruit_type} at "
+              f"{target.round(3)} "
+              f"(conf={detection.confidence:.2f})")
+    feed = None
+    prev_observer = getattr(controller, "tick_observer", None)
     try:
-        return bool(controller.pick_single(
-            detection.center_base_m, detection.fruit_type))
+        if camera is not None and window is not None:
+            feed = _LiveFeed(camera)
+            feed.start()
+            controller.tick_observer = _make_render_observer(
+                feed, window, controller)
+        return bool(controller.pick_single(target, detection.fruit_type))
     except Exception as ex:
         print(f"  [picker] pick_single raised: {ex}")
         traceback.print_exc()
         return False
+    finally:
+        if feed is not None:
+            controller.tick_observer = prev_observer
+            feed.stop()
 
 
 def _nearest_to_home(detections, home_xy_m):
@@ -114,9 +260,12 @@ def _pixel_key(detection, bucket_px=5):
 
 
 def _pick_category(driver, camera, session_cal, controller,
-                     fruit_type, should_abort_fn):
+                     fruit_type, should_abort_fn, window=None):
     """Category batch: re-capture, pick nearest-to-home, repeat until
-    none left, limit hit, or abort signalled. Returns count picked."""
+    none left, limit hit, or abort signalled. Returns count picked.
+
+    When `window` is given, _pick_one runs the live D415 feed overlay
+    during each arm motion via controller.tick_observer."""
     from survey_capture import capture_fruits
     picks_done = 0
     retries = {}
@@ -140,7 +289,8 @@ def _pick_category(driver, camera, session_cal, controller,
             break
         target = _nearest_to_home(matches, controller.HOME_POS[:2])
         key = _pixel_key(target)
-        success = _pick_one(controller, target)
+        success = _pick_one(controller, target,
+                              camera=camera, window=window)
         if success:
             picks_done += 1
             retries.pop(key, None)
@@ -204,12 +354,34 @@ def run_picker_loop(driver, camera, session_cal, controller) -> None:
                 print(f"  [picker] category batch: {ftype}")
                 n = _pick_category(driver, camera, session_cal,
                                     controller, ftype,
-                                    lambda: state["abort"])
+                                    lambda: state["abort"],
+                                    window=window)
                 print(f"  [picker] {ftype} batch done: {n} picked")
                 try:
                     dets, diag = _refresh()
                 except Exception as ex:
                     print(f"  [picker] re-capture failed: {ex}")
+        elif key == ord('m'):
+            print("  [picker] multi-category sequence: "
+                  "banana -> tomato -> strawberry")
+            total = 0
+            for ftype in ('banana', 'tomato', 'strawberry'):
+                if (cv2.waitKey(1) & 0xFF) == 27 or state["abort"]:
+                    print("  [picker] multi-category aborted between batches")
+                    break
+                print(f"  [picker] === {ftype} category ===")
+                n = _pick_category(driver, camera, session_cal,
+                                    controller, ftype,
+                                    lambda: state["abort"],
+                                    window=window)
+                print(f"  [picker] {ftype} batch done: {n} picked")
+                total += n
+            print(f"  [picker] multi-category sequence done: "
+                  f"{total} total picks")
+            try:
+                dets, diag = _refresh()
+            except Exception as ex:
+                print(f"  [picker] re-capture failed: {ex}")
         elif key == ord('r'):
             print("  [picker] refresh")
             try:
