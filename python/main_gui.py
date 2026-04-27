@@ -193,16 +193,26 @@ class FruitSortingGUI:
         # left: video + end-effector pose readout
         left = ttk.Frame(root, padding=4)
         left.grid(row=0, column=0, sticky="n")
-        self.video_label = tk.Label(left, width=VIDEO_W, height=VIDEO_H,
+        # IMPORTANT: do NOT set tk.Label width/height in character units —
+        # Label without an image interprets them as char cols/rows
+        # (640 chars ≈ 3840 px), which pushes everything else off-screen.
+        # Instead pre-allocate a blank PhotoImage of the right pixel
+        # size so the Label's initial layout is correct.
+        self._blank_image = ImageTk.PhotoImage(Image.new(
+            "RGB", (VIDEO_W, VIDEO_H), color="black"))
+        self.video_label = tk.Label(left, image=self._blank_image,
                                        bg="black")
+        self.video_label.image = self._blank_image  # GC anchor
         self.video_label.pack()
         # Bottom-left readout of the live end-effector XYZ in base frame.
+        # No width= here either; pack(fill="x") + the bold Courier font
+        # let the label stretch to match the video width naturally.
         self.ee_var = tk.StringVar(
             value="EE   x = -.--- m   y = -.--- m   z = -.--- m")
         tk.Label(left, textvariable=self.ee_var,
                   font=("Courier", 11, "bold"),
-                  fg="#00ff7f", bg="black", anchor="w",
-                  width=VIDEO_W).pack(fill="x", pady=(2, 0))
+                  fg="#00ff7f", bg="black", anchor="w").pack(
+            fill="x", pady=(2, 0))
 
         # right: controls
         right = ttk.Frame(root, padding=8)
