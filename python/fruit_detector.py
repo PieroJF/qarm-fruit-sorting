@@ -48,7 +48,7 @@ HSV_RANGES = {
                     "s": [80, 255], "v": [40, 255]},
     "strawberry":  {"h_wrap1": [0, 10],  "h_wrap2": [170, 180],
                     "s": [80, 255], "v": [40, 255]},
-    "green_calyx": {"h": [20, 90],  "s": [60, 255], "v": [15, 255]},  # widened 2026-04-22: lab lighting makes strawberry leaves dark olive (V ~15-40, H ~20-35) rather than bright green
+    "green_calyx": {"h": [15, 90],  "s": [30, 255], "v": [15, 255]},  # widened 2026-04-27: prior s>=60 missed dim leaves entirely (every diag contour reported 0.0); prior h>=20 missed yellowed/dying calyx leaves whose hue falls into the orange-yellow range (H~15-20). H=15 still excludes red (H<10) so cross-class HSV stays clean.
 }
 
 _OPEN_KERNEL = np.ones((5, 5), np.uint8)
@@ -168,6 +168,23 @@ def _has_green_in_top_strip(bgr: np.ndarray, bbox: tuple,
     return float((green_mask > 0).mean())
 
 
+def _has_green_anywhere_in_bbox(bgr: np.ndarray, bbox: tuple) -> float:
+    """Fraction of green pixels anywhere inside the bbox.
+
+    Overhead camera + free-orientation strawberries means the calyx
+    can be on any side (including the bottom). Top-strip / above-band
+    checks both miss those. This catches them, at the cost of being
+    susceptible to background leak into the axis-aligned bbox corners
+    — which is acceptable because real tomatoes have no green
+    anywhere near them in this workspace."""
+    x, y, w, h = bbox
+    region = bgr[y:y + h, x:x + w]
+    if region.size == 0:
+        return 0.0
+    green_mask = hsv_mask(region, HSV_RANGES["green_calyx"])
+    return float((green_mask > 0).mean())
+
+
 def _detect_tomato_contours(bgr: np.ndarray) -> list:
     mask = hsv_mask(bgr, HSV_RANGES["tomato"])
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
@@ -192,7 +209,10 @@ def _detect_tomato_contours(bgr: np.ndarray) -> list:
             aspect = max(w_b, h_b) / min(w_b, h_b)
             if aspect > _TOMATO_MAX_ASPECT:
                 continue
-        green_ratio = _has_green_above(bgr, (x, y, w_b, h_b))
+        green_above_ratio = _has_green_above(bgr, (x, y, w_b, h_b))
+        green_in_bbox_ratio = _has_green_anywhere_in_bbox(
+            bgr, (x, y, w_b, h_b))
+        green_ratio = max(green_above_ratio, green_in_bbox_ratio)
         if green_ratio > _GREEN_ABOVE_RATIO:
             continue
         M = cv2.moments(c)
@@ -245,7 +265,9 @@ def _detect_strawberry_contours(bgr: np.ndarray) -> list:
         x, y, w_b, h_b = cv2.boundingRect(c)
         above_ratio = _has_green_above(bgr, (x, y, w_b, h_b))
         top_strip_ratio = _has_green_in_top_strip(bgr, (x, y, w_b, h_b))
-        calyx_ratio = max(above_ratio, top_strip_ratio)
+        in_bbox_ratio = _has_green_anywhere_in_bbox(
+            bgr, (x, y, w_b, h_b))
+        calyx_ratio = max(above_ratio, top_strip_ratio, in_bbox_ratio)
         if calyx_ratio <= _STRAWBERRY_MIN_CALYX:
             continue
         taper = _taper_score(c, (x, y, w_b, h_b))
