@@ -183,19 +183,20 @@ _STRAWBERRY_CALYX_BIAS_M = 0.02   # empirical 2026-04-27 (re-added after
                                    # lands the gripper better-centred on
                                    # the body. Banana/tomato unaffected.
 
-_STRAWBERRY_X_BIAS_M = -0.025     # empirical 2026-04-27: strawberry picks
+_STRAWBERRY_X_BIAS_M = -0.030     # empirical 2026-04-27: strawberry picks
                                    # were landing too far from the base
                                    # (the global PICK_BIAS_X = +5cm in
                                    # the controller was over-correcting
                                    # for strawberries). Negative shifts
                                    # the target toward the base in the
                                    # base-frame x axis. Iterations -2cm
-                                   # -> -3.5cm -> -2.5cm in the same
-                                   # lab session (-2.5 = pulled back
-                                   # 1cm away from base after the -3.5
-                                   # over-corrected). Net effective x
-                                   # bias for strawberry = +5cm - 2.5cm
-                                   # = +2.5cm. Banana / tomato keep the
+                                   # -> -3.5cm -> -2.5cm -> -3.0cm in
+                                   # the same lab session (-3.5 over-
+                                   # corrected, -2.5 went 1cm too far
+                                   # away from base, -3.0 is the 0.5cm
+                                   # midpoint). Net effective x bias
+                                   # for strawberry = +5cm - 3.0cm
+                                   # = +2.0cm. Banana / tomato keep the
                                    # full +5cm.
 
 
