@@ -7,6 +7,22 @@
 
 ---
 
+## 0. Pending after `Patches` branch (2026-04-27)
+
+Code-review of merge `c621600` (PR #3, "Applied robot vision") flagged regressions and follow-ups. The reversible/dev-machine fixes landed on branch `Patches`. The items below remain **open** and require either lab access or a team decision before closing:
+
+**Hardware-blocked (need D415 / QArm / Simulink):**
+- `matlab_facade/py_detect_live.m:85` calls `fruit_detector.detect_and_project(...)` which was removed by PR #3. Decision needed: retire the MATLAB live-detect path, or restore a `detect_and_project` shim against the new `session_cal` projection. Either way verification needs Simulink + D415.
+- 5 legacy diagnostic scripts depend on the old detector API and will fail at import: `python/analyze_static.py`, `python/analyze_detections.py`, `python/hover_test.py`, `python/recal_from_pose.py`, `python/test_auto_pick.py`. Migrating them is mechanical, but verifying that the migrated outputs match the originals needs the lab rig.
+- End-to-end validation that the new `pick_single` empirical X-bias (`PICK_BIAS_X = 0.05` m) is still correct after recalibration, and is in fact a per-rig constant rather than a per-session one.
+- HSV / shape thresholds in `fruit_detector.py` were tuned for the 2026-04-22 lighting and chessboard distance; needs lab confirmation under final-demo conditions.
+
+**Decisions (team, no code/hardware):**
+- Verify identity of git author `vico3740 <…>` (24 commits inside PR #3). Confirm whether this is an authorised collaborator and align on git config so future commits land under a known identity.
+- Discuss the unauthorised PR #3 merge with Yichang Chao. Branch protection on `master` (added 2026-04-27) prevents recurrence; the conversation is about process, not access.
+
+---
+
 ## 0. Sprint state (2026-04-23)
 
 **D3 complete** — picker_viewer + survey_capture + pick_single + main_final rewrite landed. Preflight swapped UGreen/VisualRef for session_cal + chessboard-still-visible. MATLAB facade demo queue gutted. Pending: D4 lab tuning of HSV, first end-to-end pick test (D4 AM).
