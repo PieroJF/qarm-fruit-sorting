@@ -257,7 +257,8 @@ def _pixel_key(detection, bucket_px=5):
 
 
 def _pick_category(driver, camera, session_cal, controller,
-                     fruit_type, should_abort_fn):
+                     fruit_type, should_abort_fn, window=None,
+                     picking_state=None):
     """Category batch: re-capture, pick nearest-to-home, repeat until
     none left, limit hit, or abort signalled. Returns count picked."""
     from survey_capture import capture_fruits
@@ -283,7 +284,14 @@ def _pick_category(driver, camera, session_cal, controller,
             break
         target = _nearest_to_home(matches, controller.HOME_POS[:2])
         key = _pixel_key(target)
-        success = _pick_one(controller, target)
+        if picking_state is not None:
+            picking_state["picking"] = True
+        try:
+            success = _pick_one(controller, target,
+                                  camera=camera, window=window)
+        finally:
+            if picking_state is not None:
+                picking_state["picking"] = False
         if success:
             picks_done += 1
             retries.pop(key, None)
@@ -314,13 +322,9 @@ def run_picker_loop(driver, camera, session_cal, controller) -> None:
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window, 1280, 720)
 
-    state = {"click": None, "abort": False}
+    state = {"click": None, "abort": False, "picking": False}
 
-    def _on_mouse(event, x, y, flags, _):
-        if event == cv2.EVENT_LBUTTONDOWN:
-            state["click"] = (x, y)
-
-    cv2.setMouseCallback(window, _on_mouse)
+    cv2.setMouseCallback(window, _make_mouse_callback(state))
 
     def _refresh():
         dets, diag = capture_fruits(driver, camera, session_cal)
@@ -348,7 +352,12 @@ def run_picker_loop(driver, camera, session_cal, controller) -> None:
             if target is None:
                 print(f"  [picker] no fruit near {click}")
             else:
-                _pick_one(controller, target)
+                state["picking"] = True
+                try:
+                    _pick_one(controller, target,
+                                camera=camera, window=window)
+                finally:
+                    state["picking"] = False
                 try:
                     dets, diag = _refresh()
                 except Exception as ex:
@@ -364,7 +373,9 @@ def run_picker_loop(driver, camera, session_cal, controller) -> None:
                 print(f"  [picker] category batch: {ftype}")
                 n = _pick_category(driver, camera, session_cal,
                                     controller, ftype,
-                                    lambda: state["abort"])
+                                    lambda: state["abort"],
+                                    window=window,
+                                    picking_state=state)
                 print(f"  [picker] {ftype} batch done: {n} picked")
                 try:
                     dets, diag = _refresh()
