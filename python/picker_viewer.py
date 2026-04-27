@@ -9,6 +9,8 @@ unit-tested.
 from __future__ import annotations
 import os
 import sys
+import threading
+import time
 import traceback
 
 import numpy as np
@@ -96,6 +98,50 @@ def _hud_text(n_fruits, residual_mm, mode):
     r = f"{residual_mm:.1f}" if residual_mm is not None else "n/a"
     return (f"{n_fruits} fruits  |  residual {r} mm  |  "
             f"mode: {mode}  |  click / b t s / r / ESC")
+
+
+# ------------------------------------------------------------------------
+# Live camera feed (used during arm motion to keep the picker window from
+# freezing). The feed is the SOLE reader of QArmCamera while it runs
+# because camera.read() shares internal buffers (camera.py:50-55, 168-174)
+# and is not thread-safe. Callers MUST stop()+join the feed before any
+# other code touches the camera.
+# ------------------------------------------------------------------------
+
+class _LiveFeed:
+    def __init__(self, camera):
+        self._cam = camera
+        self._latest = None
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = None
+
+    def start(self):
+        if self._thread is not None:
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def stop(self, timeout=2.0):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+            self._thread = None
+
+    def latest(self):
+        with self._lock:
+            return None if self._latest is None else self._latest.copy()
+
+    def _loop(self):
+        while not self._stop.is_set():
+            try:
+                color, _ = self._cam.read()
+                with self._lock:
+                    self._latest = color
+            except Exception:
+                # Camera blip: keep last frame, retry next iteration.
+                pass
 
 
 # ------------------------------------------------------------------------

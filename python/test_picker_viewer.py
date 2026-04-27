@@ -1,5 +1,6 @@
 """Tests for picker_viewer pure helpers."""
 import os, sys
+import time
 import numpy as np
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -142,12 +143,42 @@ def test_pick_category_skips_stuck_target():
     return name, True, "stuck target terminated without hang"
 
 
+def test_live_feed_populates_latest_then_stops():
+    name = "live_feed_populates_latest_then_stops"
+
+    class _StubCam:
+        def __init__(self):
+            self.calls = 0
+        def read(self):
+            self.calls += 1
+            return (np.full((720, 1280, 3), self.calls % 256, dtype=np.uint8),
+                    np.zeros((720, 1280), dtype=np.uint16))
+
+    from picker_viewer import _LiveFeed
+    cam = _StubCam()
+    feed = _LiveFeed(cam)
+    feed.start()
+    deadline = time.time() + 0.5
+    frame = None
+    while time.time() < deadline:
+        frame = feed.latest()
+        if frame is not None:
+            break
+        time.sleep(0.01)
+    feed.stop()
+    assert frame is not None, "latest() returned None within 500 ms"
+    assert frame.shape == (720, 1280, 3), f"shape = {frame.shape}"
+    assert feed._thread is None, "stop() did not clear thread"
+    return name, True, f"latest shape={frame.shape}, cam.calls={cam.calls}"
+
+
 TESTS = [
     test_nearest_within_radius, test_nearest_outside_radius_returns_none,
     test_nearest_empty_list_returns_none, test_filter_by_type,
     test_annotate_returns_image_same_shape, test_hud_text_contains_counts,
     test_pick_one_calls_controller,
     test_pick_category_skips_stuck_target,
+    test_live_feed_populates_latest_then_stops,
 ]
 
 
