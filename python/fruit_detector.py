@@ -241,6 +241,7 @@ def _detect_tomato_contours(bgr: np.ndarray) -> list:
 _STRAWBERRY_MIN_AREA = 200
 _STRAWBERRY_MAX_AREA = 40000      # widened 2026-04-22: close-up strawberries reach ~30k px at survey1 distance
 _STRAWBERRY_MIN_CALYX = 0.05     # same threshold as tomato's rejection band
+_STRAWBERRY_MAX_CIRC = 0.4       # added 2026-04-27: when calyx is not visible (camera-facing-away orientation, brown/dim leaves), an irregular shape (circ < 0.4) is itself a strawberry signal. Set equal to _TOMATO_MIN_CIRCULARITY so the two classes never overlap on the shape axis (tomato accepts circ >= 0.4, strawberry shape-signal fires at circ < 0.4).
 
 
 def _taper_score(contour, bbox) -> float:
@@ -276,7 +277,16 @@ def _detect_strawberry_contours(bgr: np.ndarray) -> list:
             continue
         x, y, w_b, h_b = cv2.boundingRect(c)
         calyx_ratio = _calyx_signal(bgr, (x, y, w_b, h_b))
-        if calyx_ratio <= _STRAWBERRY_MIN_CALYX:
+        # Shape signal: low circularity (irregular shape) is a positive
+        # strawberry indicator since tomato is always round (>= 0.4 by
+        # _TOMATO_MIN_CIRCULARITY). Used as a fallback when the calyx
+        # green is not detectable in this contour's bbox.
+        perim = float(cv2.arcLength(c, True))
+        if perim < 1:
+            continue
+        circ = 4 * np.pi * area / (perim * perim)
+        shape_signal = circ < _STRAWBERRY_MAX_CIRC
+        if calyx_ratio <= _STRAWBERRY_MIN_CALYX and not shape_signal:
             continue
         taper = _taper_score(c, (x, y, w_b, h_b))
         # Widened 2026-04-22: in overhead view (camera nearly nadir) the
@@ -292,9 +302,13 @@ def _detect_strawberry_contours(bgr: np.ndarray) -> list:
             continue
         cx = int(M["m10"] / M["m00"])
         cy = int(M["m01"] / M["m00"])
-        # Confidence driven mostly by calyx; taper gate is binary.
-        # No floor — CONFIDENCE_MIN is the authoritative gate.
-        conf = float(min(1.0, calyx_ratio * 3.0))
+        # Confidence: prefer calyx evidence (continuous), use shape as
+        # a mid-confidence floor when only shape says strawberry. Both
+        # paths are independently sufficient and CONFIDENCE_MIN is the
+        # final gate.
+        calyx_conf = float(min(1.0, calyx_ratio * 3.0))
+        shape_conf = 0.5 if shape_signal else 0.0
+        conf = max(calyx_conf, shape_conf)
         hits.append(((cx, cy), int(area),
                      (int(x), int(y), int(w_b), int(h_b)),
                      conf))
