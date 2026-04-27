@@ -144,6 +144,52 @@ class _LiveFeed:
                 pass
 
 
+def _make_render_observer(feed, window, controller, fps_limit=30.0):
+    """Closure suitable for FruitSortingController.tick_observer.
+
+    Reads the latest frame from `feed`, draws a status overlay derived
+    from controller.state.name and controller.current_target, and shows
+    it in `window`. Throttled to fps_limit so the FSM tick budget is
+    not consumed by GUI work (cv2.imshow + waitKey costs ~1-3 ms; at
+    100 Hz dt that would eat 10-30% of the loop). Uses time.monotonic()
+    for the gate so a wall-clock NTP/DST jump cannot break the throttle."""
+    last = {"t": 0.0}
+    period = 1.0 / float(fps_limit)
+
+    def _render():
+        now = time.monotonic()
+        if now - last["t"] < period:
+            return
+        last["t"] = now
+        frame = feed.latest()
+        if frame is None:
+            return
+        out = frame.copy()
+        try:
+            sname = controller.state.name
+        except Exception:
+            sname = "?"
+        target = getattr(controller, "current_target", None)
+        if target is not None:
+            ftype = target.get("type", "?") if isinstance(target, dict) \
+                else "?"
+            pos = target.get("pos") if isinstance(target, dict) else None
+            if pos is not None and len(pos) >= 3:
+                label = (f"PICKING {ftype} @ "
+                         f"({pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f}) | "
+                         f"state: {sname}")
+            else:
+                label = f"PICKING {ftype} | state: {sname}"
+        else:
+            label = f"state: {sname}"
+        cv2.putText(out, label, (10, 28), cv2.FONT_HERSHEY_SIMPLEX,
+                     0.6, (0, 255, 255), 2, cv2.LINE_AA)
+        cv2.imshow(window, out)
+        cv2.waitKey(1)
+
+    return _render
+
+
 def _make_mouse_callback(state):
     """Build the OpenCV mouse callback. Drops left-clicks while
     state.get('picking') is True so clicks during arm motion don't

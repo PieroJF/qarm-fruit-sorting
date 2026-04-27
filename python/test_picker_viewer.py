@@ -190,6 +190,73 @@ def test_mouse_callback_drops_clicks_while_picking():
     return name, True, "click gated by picking flag"
 
 
+def test_render_observer_throttles_and_overlays_state():
+    name = "render_observer_throttles_and_overlays_state"
+
+    captured = {"imshow": [], "waitKey": 0}
+    orig_imshow = cv2.imshow
+    orig_waitKey = cv2.waitKey
+    cv2.imshow = lambda w, f: captured["imshow"].append((w, f.shape))
+    cv2.waitKey = lambda d: (captured.__setitem__("waitKey",
+                                                  captured["waitKey"] + 1)
+                             or 0)
+    try:
+        from picker_viewer import _make_render_observer
+
+        class _Feed:
+            def latest(self):
+                return np.zeros((720, 1280, 3), dtype=np.uint8)
+
+        class _Ctrl:
+            class state:
+                name = "DESCEND"
+            current_target = {"type": "tomato",
+                              "pos": np.array([0.4, 0.1, 0.05])}
+
+        observer = _make_render_observer(
+            _Feed(), "win", _Ctrl(), fps_limit=30.0)
+        observer()                  # first call: renders
+        observer()                  # immediate: throttled
+        time.sleep(0.05)            # > 1/30 s
+        observer()                  # third call: renders again
+        assert len(captured["imshow"]) == 2, \
+            f"expected 2 renders, got {len(captured['imshow'])}"
+        assert captured["imshow"][0][0] == "win"
+        assert captured["imshow"][0][1] == (720, 1280, 3)
+        assert captured["waitKey"] == 2
+    finally:
+        cv2.imshow = orig_imshow
+        cv2.waitKey = orig_waitKey
+    return name, True, f"{len(captured['imshow'])} renders, "\
+                        f"{captured['waitKey']} waitKeys"
+
+
+def test_render_observer_handles_none_target():
+    name = "render_observer_handles_none_target"
+    orig_imshow = cv2.imshow
+    orig_waitKey = cv2.waitKey
+    cv2.imshow = lambda w, f: None
+    cv2.waitKey = lambda d: 0
+    try:
+        from picker_viewer import _make_render_observer
+
+        class _Feed:
+            def latest(self):
+                return np.zeros((720, 1280, 3), dtype=np.uint8)
+
+        class _Ctrl:
+            class state:
+                name = "GO_HOME"
+            current_target = None
+
+        observer = _make_render_observer(_Feed(), "win", _Ctrl())
+        observer()  # must not raise
+    finally:
+        cv2.imshow = orig_imshow
+        cv2.waitKey = orig_waitKey
+    return name, True, "no exception with current_target=None"
+
+
 TESTS = [
     test_nearest_within_radius, test_nearest_outside_radius_returns_none,
     test_nearest_empty_list_returns_none, test_filter_by_type,
@@ -198,6 +265,8 @@ TESTS = [
     test_pick_category_skips_stuck_target,
     test_live_feed_populates_latest_then_stops,
     test_mouse_callback_drops_clicks_while_picking,
+    test_render_observer_throttles_and_overlays_state,
+    test_render_observer_handles_none_target,
 ]
 
 
