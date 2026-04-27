@@ -9,6 +9,7 @@ unit-tested.
 from __future__ import annotations
 import os
 import sys
+import traceback
 
 import numpy as np
 import cv2
@@ -115,6 +116,7 @@ def _pick_one(controller, detection) -> bool:
             detection.center_base_m, detection.fruit_type))
     except Exception as ex:
         print(f"  [picker] pick_single raised: {ex}")
+        traceback.print_exc()
         return False
 
 
