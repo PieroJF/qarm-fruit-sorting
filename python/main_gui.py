@@ -155,7 +155,6 @@ VIDEO_W = 640
 VIDEO_H = 360
 CAMERA_LOOP_HZ = 30
 UI_REFRESH_HZ = 20
-EE_POSE_UPDATE_MS = 250         # how often to refresh end-effector XYZ label
 OVERLAY_LINGER_S = 5.0          # how long to hold the captured frame +
                                 # detection bboxes on screen after a refresh
 ESTOP_FREEZE_REPEAT = 30        # how many times to spam the freeze pose
@@ -218,9 +217,8 @@ class FruitSortingGUI:
             target=self._camera_loop, daemon=True)
         self._camera_thread.start()
 
-        # schedule periodic video + telemetry updates
+        # schedule periodic video updates
         self.root.after(int(1000 / UI_REFRESH_HZ), self._update_video)
-        self.root.after(EE_POSE_UPDATE_MS, self._update_ee_pose)
 
     # -----------------------------------------------------------------
     # UI construction
@@ -229,7 +227,7 @@ class FruitSortingGUI:
     def _build_ui(self):
         root = self.root
 
-        # left: video + end-effector pose readout
+        # left: video only
         left = ttk.Frame(root, padding=4)
         left.grid(row=0, column=0, sticky="n")
         # IMPORTANT: do NOT set tk.Label width/height in character units —
@@ -243,15 +241,6 @@ class FruitSortingGUI:
                                        bg="black")
         self.video_label.image = self._blank_image  # GC anchor
         self.video_label.pack()
-        # Bottom-left readout of the live end-effector XYZ in base frame.
-        # No width= here either; pack(fill="x") + the bold Courier font
-        # let the label stretch to match the video width naturally.
-        self.ee_var = tk.StringVar(
-            value="EE   x = -.--- m   y = -.--- m   z = -.--- m")
-        tk.Label(left, textvariable=self.ee_var,
-                  font=("Courier", 11, "bold"),
-                  fg="#00ff7f", bg="black", anchor="w").pack(
-            fill="x", pady=(2, 0))
 
         # right: controls
         right = ttk.Frame(root, padding=8)
@@ -442,35 +431,7 @@ class FruitSortingGUI:
         if not self._stop_threads.is_set():
             self.root.after(int(1000 / UI_REFRESH_HZ), self._update_video)
 
-    def _update_ee_pose(self):
-        """Periodic end-effector XYZ readout (~4 Hz). Skipped while a
-        worker is using the driver — the Quanser HIL card raises
-        HILError -843 on concurrent read/write and once tripped can
-        require a card power-cycle to recover. The label freezes at
-        the last reading during long actions; that is intentional."""
-        if not self.busy:
-            try:
-                joints, _ = self.driver.read_all()
-                ee_pos, _ = forward_kinematics(
-                    np.asarray(joints, dtype=float))
-                self.ee_var.set(
-                    f"EE   x = {ee_pos[0]:+.3f} m   "
-                    f"y = {ee_pos[1]:+.3f} m   "
-                    f"z = {ee_pos[2]:+.3f} m")
-            except Exception as ex:
-                # Throttle: print first 3 errors then go silent so we
-                # can debug "EE never updates" without spamming the
-                # console.
-                self._ee_err_count = getattr(self, "_ee_err_count", 0) + 1
-                if self._ee_err_count <= 3:
-                    print(f"[EE pose] update failed "
-                          f"(#{self._ee_err_count}): {ex!r}")
-                    if self._ee_err_count == 3:
-                        print("[EE pose] further errors silenced")
-        if not self._stop_threads.is_set():
-            self.root.after(EE_POSE_UPDATE_MS, self._update_ee_pose)
-
-    # -----------------------------------------------------------------
+# -----------------------------------------------------------------
     # Status helper (thread-safe via root.after)
     # -----------------------------------------------------------------
 
