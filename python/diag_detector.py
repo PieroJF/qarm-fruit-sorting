@@ -133,6 +133,7 @@ def main():
             homography_reproj_rms_px=cal.homography_reproj_rms_px,
             camera_height_above_table_m=cal.camera_height_above_table_m,
             image_size=cal.image_size,
+            cam_extrinsics_survey1=cal.cam_extrinsics_survey1,
         )
         detections = detect_fruits(color, depth, cal_for_run)
     finally:

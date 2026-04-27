@@ -10,7 +10,7 @@ if _HERE not in sys.path:
 
 from fruit_detector import Detection
 from picker_viewer import (
-    _nearest_detection, _filter_by_type, _annotate, _hud_text,
+    _filter_by_type, _annotate, _hud_text,
 )
 
 
@@ -23,30 +23,6 @@ def _mk_det(ftype, cx, cy, conf=0.8):
         area_px=500,
         bbox=(cx - 10, cy - 10, 20, 20),
     )
-
-
-def test_nearest_within_radius():
-    name = "nearest_within"
-    dets = [_mk_det("tomato", 100, 100),
-            _mk_det("banana", 300, 300)]
-    got = _nearest_detection(dets, (110, 95), max_r_px=50)
-    assert got is not None
-    assert got.fruit_type == "tomato"
-    return name, True, "picks the closer one"
-
-
-def test_nearest_outside_radius_returns_none():
-    name = "nearest_outside"
-    dets = [_mk_det("tomato", 100, 100)]
-    got = _nearest_detection(dets, (500, 500), max_r_px=50)
-    assert got is None
-    return name, True, "out-of-range click -> None"
-
-
-def test_nearest_empty_list_returns_none():
-    name = "nearest_empty"
-    assert _nearest_detection([], (100, 100), max_r_px=50) is None
-    return name, True, "empty detection list -> None"
 
 
 def test_filter_by_type():
@@ -173,23 +149,6 @@ def test_live_feed_populates_latest_then_stops():
     return name, True, f"latest shape={frame.shape}, cam.calls={cam.calls}"
 
 
-def test_mouse_callback_drops_clicks_while_picking():
-    name = "mouse_callback_drops_clicks_while_picking"
-    from picker_viewer import _make_mouse_callback
-    state = {"click": None, "picking": False}
-    cb = _make_mouse_callback(state)
-    cb(cv2.EVENT_LBUTTONDOWN, 100, 100, 0, None)
-    assert state["click"] == (100, 100), "click should register when not picking"
-    state["click"] = None
-    state["picking"] = True
-    cb(cv2.EVENT_LBUTTONDOWN, 200, 200, 0, None)
-    assert state["click"] is None, "click should be dropped while picking"
-    state["picking"] = False
-    cb(cv2.EVENT_LBUTTONDOWN, 300, 300, 0, None)
-    assert state["click"] == (300, 300), "clicks should resume after picking ends"
-    return name, True, "click gated by picking flag"
-
-
 def test_render_observer_throttles_and_overlays_state():
     name = "render_observer_throttles_and_overlays_state"
 
@@ -298,13 +257,11 @@ def test_pick_one_starts_and_clears_observer_when_camera_provided():
 
 
 TESTS = [
-    test_nearest_within_radius, test_nearest_outside_radius_returns_none,
-    test_nearest_empty_list_returns_none, test_filter_by_type,
+    test_filter_by_type,
     test_annotate_returns_image_same_shape, test_hud_text_contains_counts,
     test_pick_one_calls_controller,
     test_pick_category_skips_stuck_target,
     test_live_feed_populates_latest_then_stops,
-    test_mouse_callback_drops_clicks_while_picking,
     test_render_observer_throttles_and_overlays_state,
     test_render_observer_handles_none_target,
     test_pick_one_starts_and_clears_observer_when_camera_provided,

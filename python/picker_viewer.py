@@ -1,5 +1,5 @@
 """
-Operator-facing picker UI: click-to-pick + category-batch autonomous loop.
+Operator-facing picker UI: category-batch autonomous loop.
 
 See docs/superpowers/specs/2026-04-22-overhead-vision-pipeline-design.md §3.5.
 
@@ -32,29 +32,6 @@ _HUD_COLOR = (255, 255, 255)
 _RESIDUAL_OK = (0, 200, 0)
 _RESIDUAL_WARN = (0, 180, 220)
 _RESIDUAL_BAD = (0, 0, 255)
-
-CLICK_MAX_R_PX = 50
-
-
-def _nearest_detection(detections, click_xy, max_r_px=CLICK_MAX_R_PX):
-    """Return the detection with smallest pixel distance to click_xy,
-    within max_r_px. None if no detection qualifies."""
-    if not detections:
-        return None
-    cx, cy = float(click_xy[0]), float(click_xy[1])
-    best = None
-    best_d2 = (max_r_px + 1) ** 2
-    for d in detections:
-        dx = d.center_px[0] - cx
-        dy = d.center_px[1] - cy
-        d2 = dx * dx + dy * dy
-        if d2 < best_d2:
-            best_d2 = d2
-            best = d
-    if best_d2 > max_r_px * max_r_px:
-        return None
-    return best
-
 
 def _filter_by_type(detections, fruit_type):
     """Keep only detections whose fruit_type matches."""
@@ -97,7 +74,8 @@ def _annotate(color_bgr, detections, residual_mm, warnings):
 def _hud_text(n_fruits, residual_mm, mode):
     r = f"{residual_mm:.1f}" if residual_mm is not None else "n/a"
     return (f"{n_fruits} fruits  |  residual {r} mm  |  "
-            f"mode: {mode}  |  click / b t s / r / ESC")
+            f"mode: {mode}  |  b=banana  t=tomato  s=strawberry  "
+            f"r=refresh  ESC=quit")
 
 
 # ------------------------------------------------------------------------
@@ -190,17 +168,6 @@ def _make_render_observer(feed, window, controller, fps_limit=30.0):
     return _render
 
 
-def _make_mouse_callback(state):
-    """Build the OpenCV mouse callback. Drops left-clicks while
-    state.get('picking') is True so clicks during arm motion don't
-    match against stale `dets` (camera moves with the arm; the cached
-    detection pixel coords no longer correspond to live image pixels)."""
-    def _on_mouse(event, x, y, flags, _):
-        if event == cv2.EVENT_LBUTTONDOWN and not state.get("picking", False):
-            state["click"] = (x, y)
-    return _on_mouse
-
-
 # ------------------------------------------------------------------------
 # Pick dispatchers
 # ------------------------------------------------------------------------
@@ -257,10 +224,12 @@ def _pixel_key(detection, bucket_px=5):
 
 
 def _pick_category(driver, camera, session_cal, controller,
-                     fruit_type, should_abort_fn, window=None,
-                     picking_state=None):
+                     fruit_type, should_abort_fn, window=None):
     """Category batch: re-capture, pick nearest-to-home, repeat until
-    none left, limit hit, or abort signalled. Returns count picked."""
+    none left, limit hit, or abort signalled. Returns count picked.
+
+    When `window` is given, _pick_one runs the live D415 feed overlay
+    during each arm motion via controller.tick_observer."""
     from survey_capture import capture_fruits
     picks_done = 0
     retries = {}
@@ -284,14 +253,8 @@ def _pick_category(driver, camera, session_cal, controller,
             break
         target = _nearest_to_home(matches, controller.HOME_POS[:2])
         key = _pixel_key(target)
-        if picking_state is not None:
-            picking_state["picking"] = True
-        try:
-            success = _pick_one(controller, target,
-                                  camera=camera, window=window)
-        finally:
-            if picking_state is not None:
-                picking_state["picking"] = False
+        success = _pick_one(controller, target,
+                              camera=camera, window=window)
         if success:
             picks_done += 1
             retries.pop(key, None)
@@ -322,9 +285,7 @@ def run_picker_loop(driver, camera, session_cal, controller) -> None:
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window, 1280, 720)
 
-    state = {"click": None, "abort": False, "picking": False}
-
-    cv2.setMouseCallback(window, _make_mouse_callback(state))
+    state = {"abort": False}
 
     def _refresh():
         dets, diag = capture_fruits(driver, camera, session_cal)
@@ -346,23 +307,7 @@ def run_picker_loop(driver, camera, session_cal, controller) -> None:
         if key == 27:  # ESC
             print("  [picker] ESC — exiting")
             break
-        if state["click"] is not None:
-            click = state["click"]; state["click"] = None
-            target = _nearest_detection(dets, click)
-            if target is None:
-                print(f"  [picker] no fruit near {click}")
-            else:
-                state["picking"] = True
-                try:
-                    _pick_one(controller, target,
-                                camera=camera, window=window)
-                finally:
-                    state["picking"] = False
-                try:
-                    dets, diag = _refresh()
-                except Exception as ex:
-                    print(f"  [picker] re-capture failed: {ex}")
-        elif key in (ord('b'), ord('t'), ord('s')):
+        if key in (ord('b'), ord('t'), ord('s')):
             ftype = {ord('b'): 'banana',
                        ord('t'): 'tomato',
                        ord('s'): 'strawberry'}[key]
@@ -374,8 +319,7 @@ def run_picker_loop(driver, camera, session_cal, controller) -> None:
                 n = _pick_category(driver, camera, session_cal,
                                     controller, ftype,
                                     lambda: state["abort"],
-                                    window=window,
-                                    picking_state=state)
+                                    window=window)
                 print(f"  [picker] {ftype} batch done: {n} picked")
                 try:
                     dets, diag = _refresh()
