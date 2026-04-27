@@ -65,8 +65,41 @@ from sorting_controller import (FruitSortingController,
                                   GRIP_OPEN, GRIP_CLOSE)
 from qarm_kinematics import forward_kinematics, inverse_kinematics
 from calibrate_closed_loop import slow_move_to_joints
+import survey_capture as _survey_capture_module
 from survey_capture import capture_fruits
 from picker_viewer import _pick_category
+
+
+# ---------------------------------------------------------------------------
+# Detection overlay — colors mirror picker_viewer._TYPE_COLORS so the
+# on-screen bboxes match what the operator sees in the cv2 picker.
+# ---------------------------------------------------------------------------
+_TYPE_COLORS = {
+    "banana":     (0, 255, 255),    # yellow (BGR)
+    "tomato":     (0, 0, 255),      # red
+    "strawberry": (200, 100, 255),  # pink-magenta
+}
+
+# Module-level GUI reference so the monkey-patched capture_fruits hook
+# can find the GUI without passing it through the SDK call chain.
+_GUI_INSTANCE = None
+_ORIG_CAPTURE_FRUITS = _survey_capture_module.capture_fruits
+
+
+def _capture_fruits_with_gui_hook(driver, camera, session_cal):
+    """Wraps survey_capture.capture_fruits so every capture (manual
+    Refresh AND every iteration inside _pick_category) updates the GUI's
+    overlay state."""
+    dets, diag = _ORIG_CAPTURE_FRUITS(driver, camera, session_cal)
+    gui = _GUI_INSTANCE
+    if gui is not None:
+        gui._on_capture(diag.get("color_frame"), dets)
+    return dets, diag
+
+
+# Install the hook for the lifetime of the process. _pick_category
+# imports capture_fruits at call time, so this monkey-patch reaches it.
+_survey_capture_module.capture_fruits = _capture_fruits_with_gui_hook
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +116,11 @@ VIDEO_W = 640
 VIDEO_H = 360
 CAMERA_LOOP_HZ = 30
 UI_REFRESH_HZ = 20
+EE_POSE_UPDATE_MS = 250         # how often to refresh end-effector XYZ label
+OVERLAY_LINGER_S = 5.0          # how long to hold the captured frame +
+                                # detection bboxes on screen after a refresh
+ESTOP_FREEZE_REPEAT = 30        # how many times to spam the freeze pose
+ESTOP_FREEZE_INTERVAL = 0.01    # seconds between freeze repeats (=300 ms total)
 
 REPO_ROOT = os.path.dirname(_HERE)
 DEFAULT_SESSION_CAL = os.path.join(REPO_ROOT, "session_cal.json")
@@ -119,6 +157,14 @@ class FruitSortingGUI:
         self.abort_event = threading.Event()
         self._latest_frame = None
         self._frame_lock = threading.Lock()
+        # Detection-overlay state populated by _capture_fruits_with_gui_hook.
+        self._last_capture_frame = None
+        self._last_detections: list = []
+        self._last_capture_time = 0.0
+
+        # Register self for the monkey-patched capture_fruits hook.
+        global _GUI_INSTANCE
+        _GUI_INSTANCE = self
 
         # --- UI ---
         self.root = tk.Tk()
@@ -133,8 +179,9 @@ class FruitSortingGUI:
             target=self._camera_loop, daemon=True)
         self._camera_thread.start()
 
-        # schedule periodic video updates
+        # schedule periodic video + telemetry updates
         self.root.after(int(1000 / UI_REFRESH_HZ), self._update_video)
+        self.root.after(EE_POSE_UPDATE_MS, self._update_ee_pose)
 
     # -----------------------------------------------------------------
     # UI construction
@@ -143,12 +190,19 @@ class FruitSortingGUI:
     def _build_ui(self):
         root = self.root
 
-        # left: video
+        # left: video + end-effector pose readout
         left = ttk.Frame(root, padding=4)
         left.grid(row=0, column=0, sticky="n")
         self.video_label = tk.Label(left, width=VIDEO_W, height=VIDEO_H,
                                        bg="black")
         self.video_label.pack()
+        # Bottom-left readout of the live end-effector XYZ in base frame.
+        self.ee_var = tk.StringVar(
+            value="EE   x = -.--- m   y = -.--- m   z = -.--- m")
+        tk.Label(left, textvariable=self.ee_var,
+                  font=("Courier", 11, "bold"),
+                  fg="#00ff7f", bg="black", anchor="w",
+                  width=VIDEO_W).pack(fill="x", pady=(2, 0))
 
         # right: controls
         right = ttk.Frame(root, padding=8)
@@ -292,11 +346,45 @@ class FruitSortingGUI:
                 pass
             time.sleep(period)
 
-    def _update_video(self):
+    def _on_capture(self, frame, dets):
+        """Hook called from the monkey-patched capture_fruits — stores the
+        captured frame + detection list for the video overlay."""
         with self._frame_lock:
-            frame = None if self._latest_frame is None \
-                    else self._latest_frame.copy()
+            self._last_capture_frame = (None if frame is None
+                                          else frame.copy())
+            self._last_detections = list(dets)
+            self._last_capture_time = time.time()
+
+    def _draw_overlay(self, frame, dets):
+        """Mutates `frame` in place — bbox + label + center dot per det."""
+        for d in dets:
+            color = _TYPE_COLORS.get(d.fruit_type, (255, 255, 255))
+            x, y, w, h = d.bbox
+            cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+            label = f"{d.fruit_type} {d.confidence:.2f}"
+            cv2.putText(frame, label, (x, max(18, y - 6)),
+                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2,
+                         cv2.LINE_AA)
+            cv2.circle(frame, tuple(int(v) for v in d.center_px),
+                        4, color, -1)
+
+    def _update_video(self):
+        # Prefer the most recent captured frame (with bboxes) if it's
+        # still within OVERLAY_LINGER_S; otherwise fall back to the
+        # live camera feed without any overlay.
+        with self._frame_lock:
+            now = time.time()
+            if (self._last_capture_frame is not None
+                    and now - self._last_capture_time < OVERLAY_LINGER_S):
+                frame = self._last_capture_frame.copy()
+                dets = list(self._last_detections)
+            else:
+                frame = (None if self._latest_frame is None
+                         else self._latest_frame.copy())
+                dets = []
         if frame is not None and frame.size > 0:
+            if dets:
+                self._draw_overlay(frame, dets)
             small = cv2.resize(frame, (VIDEO_W, VIDEO_H))
             rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
             tkimg = ImageTk.PhotoImage(Image.fromarray(rgb))
@@ -304,6 +392,20 @@ class FruitSortingGUI:
             self.video_label.image = tkimg  # keep ref so GC doesn't kill it
         if not self._stop_threads.is_set():
             self.root.after(int(1000 / UI_REFRESH_HZ), self._update_video)
+
+    def _update_ee_pose(self):
+        """Periodic end-effector XYZ readout (~4 Hz)."""
+        try:
+            joints, _ = self.driver.read_all()
+            ee_pos, _ = forward_kinematics(np.asarray(joints, dtype=float))
+            self.ee_var.set(
+                f"EE   x = {ee_pos[0]:+.3f} m   "
+                f"y = {ee_pos[1]:+.3f} m   "
+                f"z = {ee_pos[2]:+.3f} m")
+        except Exception:
+            pass  # driver may be busy; skip this tick
+        if not self._stop_threads.is_set():
+            self.root.after(EE_POSE_UPDATE_MS, self._update_ee_pose)
 
     # -----------------------------------------------------------------
     # Status helper (thread-safe via root.after)
@@ -342,19 +444,67 @@ class FruitSortingGUI:
     # -----------------------------------------------------------------
 
     def _emergency_stop(self):
+        """Set the abort flag, then spam the current measured pose back to
+        the driver fast enough to win against any in-flight motion loop
+        for a few hundred ms. Worker threads (teleop / basket / survey
+        moves and the FSM tick observer) all check abort_event and bail
+        within one step or one FSM tick of the flag being set, so the
+        spam covers the brief window before they exit."""
         self.abort_event.set()
         try:
             joints, grip = self.driver.read_all()
-            self.driver.set_joints_and_gripper(np.asarray(joints), float(grip))
-            self._set_status("EMERGENCY STOP — arm frozen at current pose")
+            joints = np.asarray(joints, dtype=float)
+            grip = float(grip)
+            for _ in range(ESTOP_FREEZE_REPEAT):
+                try:
+                    self.driver.set_joints_and_gripper(joints, grip)
+                except Exception:
+                    pass
+                time.sleep(ESTOP_FREEZE_INTERVAL)
+            self._set_status(
+                f"EMERGENCY STOP — arm frozen at "
+                f"joints {np.round(joints, 3).tolist()}. "
+                "Press another button to resume.")
         except Exception as ex:
             self._set_status(f"E-STOP partial: {ex}")
+
+    def _safe_move_to_joints(self, target, grip,
+                                seconds=3.0, steps=200):
+        """Joint-space smoothstep interp + tail hammer-loop, but checks
+        abort_event at every step so an E-STOP aborts within one tick
+        (≤ seconds/steps ≈ 15 ms by default). Drop-in replacement for
+        slow_move_to_joints inside the GUI; the underlying
+        slow_move_to_joints in calibrate_closed_loop.py is left alone
+        so non-GUI callers (preflight / capture_fruits / diag scripts)
+        keep their original behaviour."""
+        cj, cg = self.driver.read_all()
+        cj = np.asarray(cj, dtype=float)
+        cg = float(cg)
+        target = np.asarray(target, dtype=float)
+        grip = float(grip)
+        for i in range(1, steps + 1):
+            if self.abort_event.is_set():
+                return False
+            a = i / steps
+            s = 3 * a * a - 2 * a * a * a
+            self.driver.set_joints_and_gripper(
+                cj + s * (target - cj),
+                cg + s * (grip - cg))
+            time.sleep(seconds / steps)
+        # tail hammer-loop (matches slow_move_to_joints' last second)
+        for _ in range(20):
+            if self.abort_event.is_set():
+                return False
+            self.driver.set_joints_and_gripper(target, grip)
+            time.sleep(0.05)
+        return True
 
     # -----------------------------------------------------------------
     # Manual actions
     # -----------------------------------------------------------------
 
     def _teleop(self, dx, dy, dz):
+        self.abort_event.clear()
         def fn():
             joints, grip = self.driver.read_all()
             ee_pos, _ = forward_kinematics(np.asarray(joints, dtype=float))
@@ -365,12 +515,17 @@ class FruitSortingGUI:
                 self._set_status(
                     f"IK failed for {new_pos.round(3)}: {ex}")
                 return
-            slow_move_to_joints(self.driver, np.asarray(tgt), float(grip),
-                                seconds=TELEOP_SECONDS, steps=TELEOP_STEPS)
-            self._set_status(f"Moved to ee = {new_pos.round(3)}")
+            ok = self._safe_move_to_joints(tgt, grip,
+                                              seconds=TELEOP_SECONDS,
+                                              steps=TELEOP_STEPS)
+            if ok:
+                self._set_status(f"Moved to ee = {new_pos.round(3)}")
+            else:
+                self._set_status("Teleop aborted (E-STOP)")
         self._busy_guard(fn, f"teleop ({dx:+.2f},{dy:+.2f},{dz:+.2f})")
 
     def _move_to_basket(self, fruit_type):
+        self.abort_event.clear()
         def fn():
             basket_pos = self.controller.BASKETS.get(fruit_type)
             if basket_pos is None:
@@ -382,34 +537,43 @@ class FruitSortingGUI:
             except Exception as ex:
                 self._set_status(f"basket IK fail: {ex}")
                 return
-            slow_move_to_joints(self.driver, np.asarray(tgt), float(grip),
-                                seconds=BASKET_SECONDS)
-            self._set_status(f"At {fruit_type} basket")
+            ok = self._safe_move_to_joints(tgt, grip, seconds=BASKET_SECONDS)
+            if ok:
+                self._set_status(f"At {fruit_type} basket")
+            else:
+                self._set_status("Basket move aborted (E-STOP)")
         self._busy_guard(fn, f"to-basket {fruit_type}")
 
     def _gripper_open(self):
+        self.abort_event.clear()
         def fn():
             actual = self.controller.set_gripper_ramp(GRIP_OPEN)
             self._set_status(f"Gripper open (held = {actual:.2f})")
         self._busy_guard(fn, "gripper open")
 
     def _gripper_close(self):
+        self.abort_event.clear()
         def fn():
             actual = self.controller.set_gripper_ramp(GRIP_CLOSE)
             self._set_status(f"Gripper closed (held = {actual:.2f})")
         self._busy_guard(fn, "gripper close")
 
     def _goto_survey1(self):
+        self.abort_event.clear()
         def fn():
             grip = float(self.teach_points.get("survey1", {}).get(
                 "gripper", 0.10))
-            slow_move_to_joints(self.driver,
-                                np.asarray(self.session_cal.survey_pose_joints_rad),
-                                grip, seconds=SURVEY_SECONDS)
-            self._set_status("At survey1")
+            ok = self._safe_move_to_joints(
+                self.session_cal.survey_pose_joints_rad,
+                grip, seconds=SURVEY_SECONDS)
+            if ok:
+                self._set_status("At survey1")
+            else:
+                self._set_status("Survey1 move aborted (E-STOP)")
         self._busy_guard(fn, "goto survey1")
 
     def _refresh_detect(self):
+        self.abort_event.clear()
         def fn():
             dets, diag = capture_fruits(
                 self.driver, self.camera, self.session_cal)
@@ -425,30 +589,51 @@ class FruitSortingGUI:
     # Auto actions
     # -----------------------------------------------------------------
 
+    def _install_abort_observer(self):
+        """Wire abort_event into the controller's tick_observer so that
+        any FSM-driven motion (pick_single inside _pick_category) bails
+        within one FSM tick of E-STOP."""
+        def _abort_observer():
+            if self.abort_event.is_set():
+                raise RuntimeError("ABORT (E-STOP)")
+        self.controller.tick_observer = _abort_observer
+
+    def _clear_abort_observer(self):
+        self.controller.tick_observer = None
+
     def _auto_one(self, fruit_type):
+        self.abort_event.clear()
         def fn():
-            self.abort_event.clear()
             self._set_status(f"Auto: picking all {fruit_type}…")
-            n = _pick_category(self.driver, self.camera, self.session_cal,
-                                self.controller, fruit_type,
-                                lambda: self.abort_event.is_set())
+            self._install_abort_observer()
+            try:
+                n = _pick_category(self.driver, self.camera, self.session_cal,
+                                    self.controller, fruit_type,
+                                    lambda: self.abort_event.is_set())
+            finally:
+                self._clear_abort_observer()
             self._set_status(
                 f"Auto: {fruit_type} done — {n} picked"
                 + (" (aborted)" if self.abort_event.is_set() else ""))
         self._busy_guard(fn, f"auto {fruit_type}")
 
     def _auto_all(self):
+        self.abort_event.clear()
         def fn():
-            self.abort_event.clear()
             total = 0
-            for ftype in ("banana", "tomato", "strawberry"):
-                if self.abort_event.is_set():
-                    break
-                self._set_status(f"Auto-all: {ftype}…")
-                n = _pick_category(self.driver, self.camera, self.session_cal,
-                                    self.controller, ftype,
-                                    lambda: self.abort_event.is_set())
-                total += n
+            self._install_abort_observer()
+            try:
+                for ftype in ("banana", "tomato", "strawberry"):
+                    if self.abort_event.is_set():
+                        break
+                    self._set_status(f"Auto-all: {ftype}…")
+                    n = _pick_category(self.driver, self.camera,
+                                        self.session_cal, self.controller,
+                                        ftype,
+                                        lambda: self.abort_event.is_set())
+                    total += n
+            finally:
+                self._clear_abort_observer()
             self._set_status(
                 f"Auto-all done — {total} picked"
                 + (" (aborted)" if self.abort_event.is_set() else ""))
