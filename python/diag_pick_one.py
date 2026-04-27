@@ -15,7 +15,7 @@ Safety notes:
     - Approach hover at z=0.20 m, well above table.
     - Descend stops at max(0.03, fruit_top_z - 0.02) so we never drive
       below PICK_Z floor (0.02 m absolute).
-    - Gripper closes to 0.90 (GRIP_CLOSE from sorting_controller).
+    - Gripper closes to GRIP_CLOSE from sorting_controller (currently 0.72).
     - IK is solved BEFORE any motion so unreachable targets abort
       cleanly without moving the arm.
 """

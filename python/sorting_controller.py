@@ -10,7 +10,14 @@ from enum import Enum, auto
 from qarm_kinematics import forward_kinematics, inverse_kinematics
 from trajectory import quintic_trajectory
 
-GRIP_CLOSE = 0.90
+GRIP_CLOSE = 0.72   # reduced 2026-04-27 from 0.90 (= 80% of original): in
+                    # lab the 0.90 target was crushing strawberries before
+                    # the readback-and-hold cap kicked in. 0.72 still
+                    # reaches every fruit-pick we use (banana/tomato
+                    # /strawberry) and the FSM's CLOSE_GRIPPER state still
+                    # reads the actual settled jaw position back into
+                    # _held_grip, so harder objects (tomato) just stall
+                    # at their own thickness as before.
 GRIP_OPEN = 0.15
 
 

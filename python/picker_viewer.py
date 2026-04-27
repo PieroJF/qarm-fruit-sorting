@@ -175,16 +175,18 @@ def _make_render_observer(feed, window, controller, fps_limit=30.0):
 MAX_CATEGORY_PICKS = 20
 RETRY_LIMIT_PER_TARGET = 2
 
-_STRAWBERRY_CALYX_BIAS_M = 0.035  # empirical 2026-04-27: strawberry red
+_STRAWBERRY_CALYX_BIAS_M = 0.03   # empirical 2026-04-27: strawberry red
                                    # centroid sits noticeably toward the
                                    # narrow tip end (taper geometry +
                                    # overhead view), so the gripper closes
                                    # on the tip and slips. Bias the pick
-                                   # 3.5cm along the calyx-direction unit
+                                   # 3cm along the calyx-direction unit
                                    # vector so jaws straddle the wide
                                    # body. Banana/tomato unaffected.
-                                   # (Initial 2cm was not enough — bumped
-                                   # to 3.5cm in the same lab session.)
+                                   # Iterations 2cm -> 3.5cm -> 3cm during
+                                   # the same lab session; 3cm centred the
+                                   # gripper on the body without dragging
+                                   # the jaws into the calyx.
 
 
 def _pick_one(controller, detection, camera=None, window=None) -> bool:
