@@ -1,6 +1,7 @@
 """Tests for picker_viewer pure helpers."""
 import os, sys
 import time
+import cv2
 import numpy as np
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -172,6 +173,23 @@ def test_live_feed_populates_latest_then_stops():
     return name, True, f"latest shape={frame.shape}, cam.calls={cam.calls}"
 
 
+def test_mouse_callback_drops_clicks_while_picking():
+    name = "mouse_callback_drops_clicks_while_picking"
+    from picker_viewer import _make_mouse_callback
+    state = {"click": None, "picking": False}
+    cb = _make_mouse_callback(state)
+    cb(cv2.EVENT_LBUTTONDOWN, 100, 100, 0, None)
+    assert state["click"] == (100, 100), "click should register when not picking"
+    state["click"] = None
+    state["picking"] = True
+    cb(cv2.EVENT_LBUTTONDOWN, 200, 200, 0, None)
+    assert state["click"] is None, "click should be dropped while picking"
+    state["picking"] = False
+    cb(cv2.EVENT_LBUTTONDOWN, 300, 300, 0, None)
+    assert state["click"] == (300, 300), "clicks should resume after picking ends"
+    return name, True, "click gated by picking flag"
+
+
 TESTS = [
     test_nearest_within_radius, test_nearest_outside_radius_returns_none,
     test_nearest_empty_list_returns_none, test_filter_by_type,
@@ -179,6 +197,7 @@ TESTS = [
     test_pick_one_calls_controller,
     test_pick_category_skips_stuck_target,
     test_live_feed_populates_latest_then_stops,
+    test_mouse_callback_drops_clicks_while_picking,
 ]
 
 

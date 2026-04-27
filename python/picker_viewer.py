@@ -144,6 +144,17 @@ class _LiveFeed:
                 pass
 
 
+def _make_mouse_callback(state):
+    """Build the OpenCV mouse callback. Drops left-clicks while
+    state.get('picking') is True so clicks during arm motion don't
+    match against stale `dets` (camera moves with the arm; the cached
+    detection pixel coords no longer correspond to live image pixels)."""
+    def _on_mouse(event, x, y, flags, _):
+        if event == cv2.EVENT_LBUTTONDOWN and not state.get("picking", False):
+            state["click"] = (x, y)
+    return _on_mouse
+
+
 # ------------------------------------------------------------------------
 # Pick dispatchers
 # ------------------------------------------------------------------------
