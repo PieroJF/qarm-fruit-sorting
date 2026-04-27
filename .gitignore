@@ -15,7 +15,7 @@ __pycache__/
 venv/
 
 # Runtime / session files (local to each workspace)
-teach_points.json
+# Note: teach_points.json is intentionally tracked (team-shared poses).
 calibration.json
 session_cal.json
 session_cal.json.bak_*
@@ -25,6 +25,7 @@ logs/
 # Live camera captures (workspace-specific)
 figures/live_*.png
 figures/preview_*.png
+figures/detection_result.png
 
 # OS
 Thumbs.db
