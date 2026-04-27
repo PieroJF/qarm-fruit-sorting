@@ -73,6 +73,13 @@ class FruitSortingController:
                            # short of target, e.g. DESCEND -> CLOSE_GRIPPER
                            # while gripper is 10 cm above fruit).
 
+    # Empirical x-offset applied at pick_single() time to compensate for the
+    # residual base-frame projection bias observed 2026-04-24. Exposed as a
+    # class attribute so it can be overridden per-session/per-rig without
+    # touching FSM code, and so it is visible to anyone reading the contract.
+    # Detection position is unchanged on screen — only the arm target shifts.
+    PICK_BIAS_X = 0.05
+
     def __init__(self, qarm, camera=None, pick_only=False, logger=None):
         """
         Parameters
@@ -103,6 +110,7 @@ class FruitSortingController:
         self._traj_end_pos = None
         self._traj_start_joints = None   # joint-space interp (2026-04-23)
         self._traj_target_joints = None  # set by _start_move via IK
+        self._driving = False            # reentrancy guard for _drive_until_done
         # Gripper interpolation state — avoids -1289 overload stalls by
         # ramping the command and reading back the settled position after
         # the close, so we never keep torque against a stalled jaw.
@@ -153,19 +161,27 @@ class FruitSortingController:
     def _drive_until_done(self, dt):
         """Tight control loop. Pumps _step at `dt` cadence until state==DONE
         or an exception is caught. Shared between run_autonomous and
-        pick_single."""
-        while self.state != State.DONE:
-            loop_start = time.time()
-            try:
-                self._step(time.time())
-            except Exception as ex:
-                print(f"[ERROR] state {self.state.name}: {ex}")
-                print("[ERROR] aborting — arm held at last commanded pose")
-                break
-            elapsed = time.time() - loop_start
-            sleep_time = dt - elapsed
-            if sleep_time > 0:
-                time.sleep(sleep_time)
+        pick_single. Not reentrant — guarded by `self._driving`."""
+        if self._driving:
+            raise RuntimeError(
+                "FSM already being driven; run_autonomous / pick_single / "
+                "set_gripper_ramp must not overlap")
+        self._driving = True
+        try:
+            while self.state != State.DONE:
+                loop_start = time.time()
+                try:
+                    self._step(time.time())
+                except Exception as ex:
+                    print(f"[ERROR] state {self.state.name}: {ex}")
+                    print("[ERROR] aborting — arm held at last commanded pose")
+                    break
+                elapsed = time.time() - loop_start
+                sleep_time = dt - elapsed
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+        finally:
+            self._driving = False
 
     def pick_single(self, base_xyz, fruit_type, dt=0.01):
         """
@@ -192,12 +208,8 @@ class FruitSortingController:
             the cycle.
         """
         prior = self.sorted_count
-        # Empirical +5 cm in-base-frame x offset applied at pick time to
-        # compensate for the residual projection bias observed in lab
-        # (2026-04-24). Detection position is unchanged on screen, only
-        # the arm target shifts.
         pick_target = np.asarray(base_xyz, dtype=float).copy()
-        pick_target[0] += 0.05
+        pick_target[0] += self.PICK_BIAS_X
         self.fruit_queue = [{
             'pos': pick_target,
             'type': str(fruit_type),

@@ -2,7 +2,7 @@
 Top-level launcher for the autonomous fruit-sorting pipeline.
 
 Loads session_cal.json, connects the QArm + D415, and hands off to
-picker_viewer.run_picker_loop for the click-to-pick / category-batch UI.
+picker_viewer.run_picker_loop for the category-batch picker UI.
 
 See docs/superpowers/specs/2026-04-22-overhead-vision-pipeline-design.md §4.1.
 """
