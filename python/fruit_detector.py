@@ -185,6 +185,21 @@ def _has_green_anywhere_in_bbox(bgr: np.ndarray, bbox: tuple) -> float:
     return float((green_mask > 0).mean())
 
 
+def _calyx_signal(bgr: np.ndarray, bbox: tuple) -> float:
+    """Strongest evidence of a green calyx anywhere in / above the bbox.
+
+    Used by BOTH the strawberry positive gate and the tomato
+    rejection gate so the two classes stay mutually exclusive on
+    the green criterion (otherwise a contour with a small calyx
+    visible only in top_strip could pass tomato AND strawberry,
+    producing two Detection records on the same blob)."""
+    return max(
+        _has_green_above(bgr, bbox),
+        _has_green_in_top_strip(bgr, bbox),
+        _has_green_anywhere_in_bbox(bgr, bbox),
+    )
+
+
 def _detect_tomato_contours(bgr: np.ndarray) -> list:
     mask = hsv_mask(bgr, HSV_RANGES["tomato"])
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
@@ -209,10 +224,7 @@ def _detect_tomato_contours(bgr: np.ndarray) -> list:
             aspect = max(w_b, h_b) / min(w_b, h_b)
             if aspect > _TOMATO_MAX_ASPECT:
                 continue
-        green_above_ratio = _has_green_above(bgr, (x, y, w_b, h_b))
-        green_in_bbox_ratio = _has_green_anywhere_in_bbox(
-            bgr, (x, y, w_b, h_b))
-        green_ratio = max(green_above_ratio, green_in_bbox_ratio)
+        green_ratio = _calyx_signal(bgr, (x, y, w_b, h_b))
         if green_ratio > _GREEN_ABOVE_RATIO:
             continue
         M = cv2.moments(c)
@@ -263,11 +275,7 @@ def _detect_strawberry_contours(bgr: np.ndarray) -> list:
         if area < _STRAWBERRY_MIN_AREA or area > _STRAWBERRY_MAX_AREA:
             continue
         x, y, w_b, h_b = cv2.boundingRect(c)
-        above_ratio = _has_green_above(bgr, (x, y, w_b, h_b))
-        top_strip_ratio = _has_green_in_top_strip(bgr, (x, y, w_b, h_b))
-        in_bbox_ratio = _has_green_anywhere_in_bbox(
-            bgr, (x, y, w_b, h_b))
-        calyx_ratio = max(above_ratio, top_strip_ratio, in_bbox_ratio)
+        calyx_ratio = _calyx_signal(bgr, (x, y, w_b, h_b))
         if calyx_ratio <= _STRAWBERRY_MIN_CALYX:
             continue
         taper = _taper_score(c, (x, y, w_b, h_b))
