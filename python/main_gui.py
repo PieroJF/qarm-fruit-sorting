@@ -66,6 +66,7 @@ from sorting_controller import (FruitSortingController,
 from qarm_kinematics import forward_kinematics, inverse_kinematics
 from calibrate_closed_loop import slow_move_to_joints
 import survey_capture as _survey_capture_module
+import calibrate_closed_loop as _ccl_module
 from survey_capture import capture_fruits
 from picker_viewer import _pick_category
 
@@ -100,6 +101,44 @@ def _capture_fruits_with_gui_hook(driver, camera, session_cal):
 # Install the hook for the lifetime of the process. _pick_category
 # imports capture_fruits at call time, so this monkey-patch reaches it.
 _survey_capture_module.capture_fruits = _capture_fruits_with_gui_hook
+
+
+# ---------------------------------------------------------------------------
+# Abort-aware slow_move_to_joints — replaces the project's helper for this
+# process so capture_fruits' "go to survey1" 3 s motion (and any other
+# caller) can be interrupted by the GUI's E-STOP within ~15 ms.
+# ---------------------------------------------------------------------------
+_ORIG_SLOW_MOVE = _ccl_module.slow_move_to_joints
+
+
+def _slow_move_with_abort(q, target, grip, seconds=3.0, steps=200):
+    gui = _GUI_INSTANCE
+    if gui is None:
+        return _ORIG_SLOW_MOVE(q, target, grip, seconds, steps)
+    cj, cg = q.read_all()
+    cj = np.asarray(cj, dtype=float); cg = float(cg)
+    target = np.asarray(target, dtype=float); grip = float(grip)
+    for i in range(1, steps + 1):
+        if gui.abort_event.is_set():
+            return
+        a = i / steps
+        s = 3 * a * a - 2 * a * a * a
+        q.set_joints_and_gripper(cj + s * (target - cj),
+                                  cg + s * (grip - cg))
+        time.sleep(seconds / steps)
+    for _ in range(20):
+        if gui.abort_event.is_set():
+            return
+        q.set_joints_and_gripper(target, grip)
+        time.sleep(0.05)
+
+
+_ccl_module.slow_move_to_joints = _slow_move_with_abort
+# Re-publish so any module that already imported the symbol via
+# `from calibrate_closed_loop import slow_move_to_joints` BEFORE this
+# point keeps working (their local binding still points at the
+# original — but main_gui imports nothing that pre-binds it).
+slow_move_to_joints = _slow_move_with_abort
 
 
 # ---------------------------------------------------------------------------
@@ -418,8 +457,16 @@ class FruitSortingGUI:
                     f"EE   x = {ee_pos[0]:+.3f} m   "
                     f"y = {ee_pos[1]:+.3f} m   "
                     f"z = {ee_pos[2]:+.3f} m")
-            except Exception:
-                pass  # transient SDK error — skip this tick
+            except Exception as ex:
+                # Throttle: print first 3 errors then go silent so we
+                # can debug "EE never updates" without spamming the
+                # console.
+                self._ee_err_count = getattr(self, "_ee_err_count", 0) + 1
+                if self._ee_err_count <= 3:
+                    print(f"[EE pose] update failed "
+                          f"(#{self._ee_err_count}): {ex!r}")
+                    if self._ee_err_count == 3:
+                        print("[EE pose] further errors silenced")
         if not self._stop_threads.is_set():
             self.root.after(EE_POSE_UPDATE_MS, self._update_ee_pose)
 
@@ -608,9 +655,17 @@ class FruitSortingGUI:
     def _install_abort_observer(self):
         """Wire abort_event into the controller's tick_observer so that
         any FSM-driven motion (pick_single inside _pick_category) bails
-        within one FSM tick of E-STOP."""
+        within one FSM tick of E-STOP. NOTE: sorting_controller's
+        _drive_until_done catches observer exceptions and only logs
+        a [warn], so raising alone is NOT enough to actually stop the
+        FSM. We also force-set controller.state = State.DONE which
+        makes the loop's `while self.state != State.DONE` check exit
+        on the next iteration."""
+        from sorting_controller import State as _State
+
         def _abort_observer():
             if self.abort_event.is_set():
+                self.controller.state = _State.DONE
                 raise RuntimeError("ABORT (E-STOP)")
         self.controller.tick_observer = _abort_observer
 
