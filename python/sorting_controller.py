@@ -65,8 +65,12 @@ class FruitSortingController:
     # PICK_Z apply unless overridden here. Strawberry descends a touch
     # deeper into the body so the gripper jaws cradle the wide section
     # rather than skimming the top of the soft skin and slipping off.
+    # Tuning history (same lab session 2026-04-27):
+    #   default  -> 0.022 m above table  : too shallow, gripper slipped
+    #   {0.03, 0.015} -> 0.015 m         : too deep, gripper struck table
+    #   {0.025, 0.018} -> 0.018 m        : current — 4 mm deeper than default
     PICK_DEPTH_OVERRIDES = {
-        "strawberry": {"pick_offset": 0.03, "pick_z_floor": 0.015},
+        "strawberry": {"pick_offset": 0.025, "pick_z_floor": 0.018},
     }
     PLACE_Z = 0.10
 
