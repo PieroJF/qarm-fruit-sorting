@@ -75,7 +75,7 @@ def _hud_text(n_fruits, residual_mm, mode):
     r = f"{residual_mm:.1f}" if residual_mm is not None else "n/a"
     return (f"{n_fruits} fruits  |  residual {r} mm  |  "
             f"mode: {mode}  |  b=banana  t=tomato  s=strawberry  "
-            f"r=refresh  ESC=quit")
+            f"m=all  r=refresh  ESC=quit")
 
 
 # ------------------------------------------------------------------------
@@ -357,6 +357,27 @@ def run_picker_loop(driver, camera, session_cal, controller) -> None:
                     dets, diag = _refresh()
                 except Exception as ex:
                     print(f"  [picker] re-capture failed: {ex}")
+        elif key == ord('m'):
+            print("  [picker] multi-category sequence: "
+                  "banana -> tomato -> strawberry")
+            total = 0
+            for ftype in ('banana', 'tomato', 'strawberry'):
+                if (cv2.waitKey(1) & 0xFF) == 27 or state["abort"]:
+                    print("  [picker] multi-category aborted between batches")
+                    break
+                print(f"  [picker] === {ftype} category ===")
+                n = _pick_category(driver, camera, session_cal,
+                                    controller, ftype,
+                                    lambda: state["abort"],
+                                    window=window)
+                print(f"  [picker] {ftype} batch done: {n} picked")
+                total += n
+            print(f"  [picker] multi-category sequence done: "
+                  f"{total} total picks")
+            try:
+                dets, diag = _refresh()
+            except Exception as ex:
+                print(f"  [picker] re-capture failed: {ex}")
         elif key == ord('r'):
             print("  [picker] refresh")
             try:
