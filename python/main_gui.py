@@ -404,16 +404,22 @@ class FruitSortingGUI:
             self.root.after(int(1000 / UI_REFRESH_HZ), self._update_video)
 
     def _update_ee_pose(self):
-        """Periodic end-effector XYZ readout (~4 Hz)."""
-        try:
-            joints, _ = self.driver.read_all()
-            ee_pos, _ = forward_kinematics(np.asarray(joints, dtype=float))
-            self.ee_var.set(
-                f"EE   x = {ee_pos[0]:+.3f} m   "
-                f"y = {ee_pos[1]:+.3f} m   "
-                f"z = {ee_pos[2]:+.3f} m")
-        except Exception:
-            pass  # driver may be busy; skip this tick
+        """Periodic end-effector XYZ readout (~4 Hz). Skipped while a
+        worker is using the driver — the Quanser HIL card raises
+        HILError -843 on concurrent read/write and once tripped can
+        require a card power-cycle to recover. The label freezes at
+        the last reading during long actions; that is intentional."""
+        if not self.busy:
+            try:
+                joints, _ = self.driver.read_all()
+                ee_pos, _ = forward_kinematics(
+                    np.asarray(joints, dtype=float))
+                self.ee_var.set(
+                    f"EE   x = {ee_pos[0]:+.3f} m   "
+                    f"y = {ee_pos[1]:+.3f} m   "
+                    f"z = {ee_pos[2]:+.3f} m")
+            except Exception:
+                pass  # transient SDK error — skip this tick
         if not self._stop_threads.is_set():
             self.root.after(EE_POSE_UPDATE_MS, self._update_ee_pose)
 
