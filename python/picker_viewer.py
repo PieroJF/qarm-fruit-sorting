@@ -175,19 +175,6 @@ def _make_render_observer(feed, window, controller, fps_limit=30.0):
 MAX_CATEGORY_PICKS = 20
 RETRY_LIMIT_PER_TARGET = 2
 
-_STRAWBERRY_CALYX_BIAS_M = 0.03   # empirical 2026-04-27: strawberry red
-                                   # centroid sits noticeably toward the
-                                   # narrow tip end (taper geometry +
-                                   # overhead view), so the gripper closes
-                                   # on the tip and slips. Bias the pick
-                                   # 3cm along the calyx-direction unit
-                                   # vector so jaws straddle the wide
-                                   # body. Banana/tomato unaffected.
-                                   # Iterations 2cm -> 3.5cm -> 3cm during
-                                   # the same lab session; 3cm centred the
-                                   # gripper on the body without dragging
-                                   # the jaws into the calyx.
-
 
 def _pick_one(controller, detection, camera=None, window=None) -> bool:
     """Dispatch one synchronous pick. Returns True on success.
@@ -199,19 +186,9 @@ def _pick_one(controller, detection, camera=None, window=None) -> bool:
     the previous tick_observer is restored.
     """
     target = np.asarray(detection.center_base_m, dtype=float).copy()
-    if (detection.fruit_type == "strawberry"
-            and detection.calyx_dir_base_unit is not None):
-        target[:2] += _STRAWBERRY_CALYX_BIAS_M * np.asarray(
-            detection.calyx_dir_base_unit, dtype=float)
-        print(f"  [picker] picking {detection.fruit_type} at "
-              f"{target.round(3)} (centroid "
-              f"{detection.center_base_m.round(3)} + "
-              f"{_STRAWBERRY_CALYX_BIAS_M*100:.1f}cm calyx bias, "
-              f"conf={detection.confidence:.2f})")
-    else:
-        print(f"  [picker] picking {detection.fruit_type} at "
-              f"{target.round(3)} "
-              f"(conf={detection.confidence:.2f})")
+    print(f"  [picker] picking {detection.fruit_type} at "
+          f"{target.round(3)} "
+          f"(conf={detection.confidence:.2f})")
     feed = None
     prev_observer = getattr(controller, "tick_observer", None)
     try:

@@ -274,6 +274,30 @@ def _taper_score(contour, bbox) -> float:
     return float(top_w) / float(max(1, bot_w))
 
 
+def _widest_point_centroid(contour, bgr_shape) -> tuple | None:
+    """Pixel that lies furthest from any contour edge — the centre of the
+    largest inscribed disk. For a teardrop strawberry this lands inside
+    the WIDE body, not at the moments centroid which gets pulled toward
+    the narrow tip. For circles it falls near the geometric centre.
+    Returns None if the contour has no interior pixels."""
+    H, W = bgr_shape[:2]
+    x, y, w, h = cv2.boundingRect(contour)
+    x0 = max(0, x - 1); y0 = max(0, y - 1)
+    x1 = min(W, x + w + 1); y1 = min(H, y + h + 1)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    mask = np.zeros((y1 - y0, x1 - x0), dtype=np.uint8)
+    shifted = contour.copy()
+    shifted[:, :, 0] -= x0
+    shifted[:, :, 1] -= y0
+    cv2.drawContours(mask, [shifted], -1, 255, thickness=-1)
+    if int(mask.sum()) == 0:
+        return None
+    dist = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+    yi, xi = np.unravel_index(int(np.argmax(dist)), dist.shape)
+    return (x0 + int(xi), y0 + int(yi))
+
+
 def _detect_strawberry_contours(bgr: np.ndarray) -> list:
     mask = hsv_mask(bgr, HSV_RANGES["strawberry"])
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
@@ -305,11 +329,13 @@ def _detect_strawberry_contours(bgr: np.ndarray) -> list:
         # segmentation artifacts).
         if taper < 0.3 or taper > 3.5:
             continue
-        M = cv2.moments(c)
-        if M["m00"] <= 0:
+        # Use the widest-inscribed-disk centre rather than the mass
+        # centroid so the gripper targets the WIDE body of a teardrop
+        # strawberry rather than a point biased toward the narrow tip.
+        widest = _widest_point_centroid(c, bgr.shape)
+        if widest is None:
             continue
-        cx = int(M["m10"] / M["m00"])
-        cy = int(M["m01"] / M["m00"])
+        cx, cy = widest
         # Confidence: prefer calyx evidence (continuous), use shape as
         # a mid-confidence floor when only shape says strawberry. Both
         # paths are independently sufficient and CONFIDENCE_MIN is the
