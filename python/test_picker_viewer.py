@@ -257,6 +257,46 @@ def test_render_observer_handles_none_target():
     return name, True, "no exception with current_target=None"
 
 
+def test_pick_one_starts_and_clears_observer_when_camera_provided():
+    name = "pick_one_lifecycle_with_camera"
+
+    class _StubCam:
+        def read(self):
+            return (np.zeros((720, 1280, 3), dtype=np.uint8),
+                    np.zeros((720, 1280), dtype=np.uint16))
+
+    class _StubCtrl:
+        def __init__(self):
+            self.tick_observer = None
+            self.observer_during_pick = "UNSET"
+            self.calls = []
+            class _State: name = "GO_HOME"
+            self.state = _State()
+            self.current_target = None
+
+        def pick_single(self, xyz, ftype):
+            self.observer_during_pick = self.tick_observer
+            self.calls.append((tuple(xyz), ftype))
+            return True
+
+    from picker_viewer import _pick_one
+    from fruit_detector import Detection
+
+    det = Detection(fruit_type="tomato", center_px=(640, 360),
+                     center_base_m=np.array([0.4, 0.0, 0.05]),
+                     confidence=0.8, area_px=1000, bbox=(620, 340, 40, 40))
+    ctrl = _StubCtrl()
+    cam = _StubCam()
+    ok = _pick_one(ctrl, det, camera=cam, window="win")
+    assert ok, "stub pick_single returned True so _pick_one should too"
+    assert ctrl.observer_during_pick is not None, \
+        "tick_observer was not set during pick_single"
+    assert ctrl.tick_observer is None, \
+        "tick_observer not restored after pick_single returned"
+    assert ctrl.calls == [((0.4, 0.0, 0.05), "tomato")]
+    return name, True, "observer set during pick, cleared after"
+
+
 TESTS = [
     test_nearest_within_radius, test_nearest_outside_radius_returns_none,
     test_nearest_empty_list_returns_none, test_filter_by_type,
@@ -267,6 +307,7 @@ TESTS = [
     test_mouse_callback_drops_clicks_while_picking,
     test_render_observer_throttles_and_overlays_state,
     test_render_observer_handles_none_target,
+    test_pick_one_starts_and_clears_observer_when_camera_provided,
 ]
 
 

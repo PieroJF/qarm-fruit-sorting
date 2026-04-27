@@ -209,18 +209,36 @@ MAX_CATEGORY_PICKS = 20
 RETRY_LIMIT_PER_TARGET = 2
 
 
-def _pick_one(controller, detection) -> bool:
-    """Dispatch one synchronous pick. Returns True on success."""
+def _pick_one(controller, detection, camera=None, window=None) -> bool:
+    """Dispatch one synchronous pick. Returns True on success.
+
+    If both `camera` and `window` are given, runs a live D415 feed
+    overlay during the arm motion via controller.tick_observer.
+    The feed is the sole reader of `camera` for its lifetime; on
+    return (success or exception) the feed is stopped + joined and
+    the previous tick_observer is restored.
+    """
     print(f"  [picker] picking {detection.fruit_type} at "
           f"{detection.center_base_m.round(3)} "
           f"(conf={detection.confidence:.2f})")
+    feed = None
+    prev_observer = getattr(controller, "tick_observer", None)
     try:
+        if camera is not None and window is not None:
+            feed = _LiveFeed(camera)
+            feed.start()
+            controller.tick_observer = _make_render_observer(
+                feed, window, controller)
         return bool(controller.pick_single(
             detection.center_base_m, detection.fruit_type))
     except Exception as ex:
         print(f"  [picker] pick_single raised: {ex}")
         traceback.print_exc()
         return False
+    finally:
+        if feed is not None:
+            controller.tick_observer = prev_observer
+            feed.stop()
 
 
 def _nearest_to_home(detections, home_xy_m):
