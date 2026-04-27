@@ -238,7 +238,7 @@ def _detect_tomato_contours(bgr: np.ndarray) -> list:
     return hits
 
 
-_STRAWBERRY_MIN_AREA = 200
+_STRAWBERRY_MIN_AREA = 1500       # raised 2026-04-27 from 200: gripper edges and red specks at frame edges (areas 200-600 px) were passing the new shape signal (circ < 0.4) and showing up as ghost strawberries. Real lab strawberries at survey1 distance are 20k+ px, so 1500 (= _TOMATO_MIN_AREA) gives a 14x safety margin.
 _STRAWBERRY_MAX_AREA = 40000      # widened 2026-04-22: close-up strawberries reach ~30k px at survey1 distance
 _STRAWBERRY_MIN_CALYX = 0.05     # same threshold as tomato's rejection band
 _STRAWBERRY_MAX_CIRC = 0.4       # added 2026-04-27: when calyx is not visible (camera-facing-away orientation, brown/dim leaves), an irregular shape (circ < 0.4) is itself a strawberry signal. Set equal to _TOMATO_MIN_CIRCULARITY so the two classes never overlap on the shape axis (tomato accepts circ >= 0.4, strawberry shape-signal fires at circ < 0.4).
