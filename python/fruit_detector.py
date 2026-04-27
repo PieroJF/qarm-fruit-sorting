@@ -93,7 +93,7 @@ def hsv_mask(bgr: np.ndarray, ranges: dict) -> np.ndarray:
 # The top-level detect_fruits() wraps these into Detection objects with
 # base-frame coordinates.
 # ------------------------------------------------------------------------
-_BANANA_MIN_AREA = 800
+_BANANA_MIN_AREA = 5000     # raised 2026-04-27 from 800: yellowed/dim strawberry calyx leaves fall into banana HSV (H 14-40, S 80+, V 60+) and have leaf-elongated shape that passes the aspect gate; they show up as ~1-3k px ghost bananas sitting on the strawberry's head. Real bananas at survey1 distance are 20k-50k px so 5000 is a safe floor with 4x margin.
 _BANANA_MAX_AREA = 80000   # widened 2026-04-22 for survey1 ~33 cm: close-up bananas reach ~50k px
 _BANANA_MIN_ASPECT = 1.5   # loosened 2026-04-22: overhead view of a curved banana has aspect ~1.5-2.0; orange-yellow non-banana items are rare on the lab table
 
