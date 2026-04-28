@@ -149,7 +149,7 @@ def test_banana_contours_finds_one():
                           (0, 220, 220))
     dets = _detect_banana_contours(img)
     assert len(dets) == 1, f"expected 1 banana, got {len(dets)}"
-    (cx, cy), area, bbox, conf = dets[0]
+    (cx, cy), area, bbox, conf, _green_px = dets[0]
     assert abs(cx - 320) < 10, f"cx={cx}"
     assert abs(cy - 240) < 10, f"cy={cy}"
     assert area > 8000, f"area={area}"
@@ -189,7 +189,7 @@ def test_tomato_finds_round_red():
     img = _draw_circle_bgr((480, 640), (320, 240), 50, (0, 0, 220))
     dets = _detect_tomato_contours(img)
     assert len(dets) == 1, f"expected 1 tomato, got {len(dets)}"
-    (cx, cy), area, bbox, conf = dets[0]
+    (cx, cy), area, bbox, conf, _green_px = dets[0]
     assert abs(cx - 320) < 5
     assert abs(cy - 240) < 5
     assert area > 7000, f"area={area}"
@@ -248,7 +248,7 @@ def test_strawberry_finds_tapered_red_with_calyx():
     img = _draw_strawberry_bgr((480, 640), (320, 240), 60, 70)
     dets = _detect_strawberry_contours(img)
     assert len(dets) == 1, f"expected 1 strawberry, got {len(dets)}"
-    (cx, cy), area, bbox, conf = dets[0]
+    (cx, cy), area, bbox, conf, _green_px = dets[0]
     assert abs(cx - 320) < 10
     assert conf > 0.3
 
@@ -380,9 +380,11 @@ def _compose_test_scene():
     import cv2
     bgr = np.zeros((720, 1280, 3), dtype=np.uint8)
     depth = np.zeros((720, 1280), dtype=np.uint16)
-    # Banana at (300, 360), yellow, elongated (120x40 gives aspect 3.0).
-    cv2.rectangle(bgr, (240, 340), (360, 380), (0, 220, 220), -1)
-    depth[330:390, 230:370] = 500
+    # Banana at (300, 360), yellow, elongated (150x60 gives aspect 2.5,
+    # area 9000 — kept above _BANANA_MIN_AREA=5000 which was raised in
+    # 2026-04-27 to drop yellowed strawberry-calyx false positives).
+    cv2.rectangle(bgr, (225, 330), (375, 390), (0, 220, 220), -1)
+    depth[320:400, 215:385] = 500
     # Tomato at (640, 360), round red.
     cv2.circle(bgr, (640, 360), 40, (0, 0, 220), -1)
     depth[315:405, 595:685] = 510
