@@ -196,8 +196,16 @@ _STRAWBERRY_X_BIAS_M = -0.030     # empirical 2026-04-27: strawberry picks
                                    # away from base, -3.0 is the 0.5cm
                                    # midpoint). Net effective x bias
                                    # for strawberry = +5cm - 3.0cm
-                                   # = +2.0cm. Banana / tomato keep the
-                                   # full +5cm.
+                                   # = +2.0cm. Banana keeps the full +5cm.
+
+_TOMATO_X_BIAS_M = +0.020         # 2026-04-28 lab. Same sign convention as
+                                   # strawberry above: positive shifts the
+                                   # target away from the base. Net
+                                   # effective x bias for tomato = +5cm +
+                                   # 2cm = +7cm. Iterations the same
+                                   # session: +1cm (net +6cm) -> -2cm
+                                   # (net +3cm) -> +3cm (net +8cm, 1cm
+                                   # too far) -> +2cm (net +7cm — current).
 
 
 def _pick_one(controller, detection, camera=None, window=None) -> bool:
@@ -220,6 +228,13 @@ def _pick_one(controller, detection, camera=None, window=None) -> bool:
               f"{detection.center_base_m.round(3)} + "
               f"{_STRAWBERRY_CALYX_BIAS_M*100:.1f}cm calyx bias + "
               f"{_STRAWBERRY_X_BIAS_M*100:+.1f}cm x bias, "
+              f"conf={detection.confidence:.2f})")
+    elif detection.fruit_type == "tomato":
+        target[0] += _TOMATO_X_BIAS_M
+        print(f"  [picker] picking {detection.fruit_type} at "
+              f"{target.round(3)} (centroid "
+              f"{detection.center_base_m.round(3)} + "
+              f"{_TOMATO_X_BIAS_M*100:+.1f}cm x bias, "
               f"conf={detection.confidence:.2f})")
     else:
         print(f"  [picker] picking {detection.fruit_type} at "

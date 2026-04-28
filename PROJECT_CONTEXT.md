@@ -74,9 +74,9 @@ FinalProject_FruitSorting/
 
 ```
 HOME_POS   = [0.45, 0.0, 0.49]    SAFE_Z = 0.20
-APPROACH_Z = 0.15   PICK_Z = 0.02   PLACE_Z = 0.10
+APPROACH_Z = 0.15   PICK_Z = 0.02   Place height = dynamic (basket Z..SAFE_Z, IK-searched)
 T_TRANSIT=2.0  T_APPROACH=1.0  T_PICK=0.8  T_DWELL=0.5
-Baskets: strawberry (0.30,-0.20,0.05)  banana (-0.30,-0.20,0.05)  tomato (0.00,-0.35,0.05)
+Baskets: strawberry (0.30,-0.20,0.0929)  banana (-0.2754,-0.1896,0.0929)  tomato (0.00,-0.35,0.0929)
 ```
 
 ### Validation status (`validate_python.py`)

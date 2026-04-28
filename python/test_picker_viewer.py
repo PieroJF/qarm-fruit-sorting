@@ -76,7 +76,10 @@ def test_pick_one_calls_controller():
     assert ok is True
     assert len(ctrl.calls) == 1
     pos, ftype = ctrl.calls[0]
-    assert np.allclose(pos, [0.42, 0.11, 0.04])
+    # tomato gets +2 cm x bias (picker_viewer._TOMATO_X_BIAS_M); the
+    # global +5 cm bias is applied later inside controller.pick_single,
+    # so the tests only see the per-fruit shift here.
+    assert np.allclose(pos, [0.44, 0.11, 0.04])
     assert ftype == "tomato"
     return name, True, "ctrl.pick_single called with det base_m + type"
 
@@ -252,7 +255,13 @@ def test_pick_one_starts_and_clears_observer_when_camera_provided():
         "tick_observer was not set during pick_single"
     assert ctrl.tick_observer is None, \
         "tick_observer not restored after pick_single returned"
-    assert ctrl.calls == [((0.4, 0.0, 0.05), "tomato")]
+    # tomato gets +2 cm x bias (picker_viewer._TOMATO_X_BIAS_M); the
+    # global +5 cm bias is applied later inside controller.pick_single,
+    # so the stub only sees the per-fruit shift here.
+    assert len(ctrl.calls) == 1
+    pos, ftype = ctrl.calls[0]
+    assert np.allclose(pos, (0.42, 0.0, 0.05)) and ftype == "tomato", \
+        f"expected ([0.42, 0, 0.05], 'tomato'), got ({pos}, {ftype!r})"
     return name, True, "observer set during pick, cleared after"
 
 

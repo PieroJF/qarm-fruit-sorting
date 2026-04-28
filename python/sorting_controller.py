@@ -44,11 +44,16 @@ class FruitSortingController:
         SELECT -> APPROACH -> DESCEND -> CLOSE -> ASCEND -> BASKET -> DESCEND -> OPEN -> ASCEND -> HOME
     """
 
-    # Basket positions in QArm base frame (metres) -- ADJUST TO YOUR SETUP
+    # Basket positions in QArm base frame (metres). Z is the **release**
+    # height (gripper xyz when opening); x,y are the basket centre.
+    # Banana taught 2026-04-28 by jogging the arm to the physical basket and
+    # reading FK; strawberry/tomato share the same z so all three releases
+    # happen at a uniform height. Re-teach via main_gui.py "teach basket"
+    # if baskets are physically moved.
     BASKETS = {
-        'strawberry': np.array([0.30, -0.20, 0.05]),
-        'banana':     np.array([-0.30, -0.20, 0.05]),
-        'tomato':     np.array([0.00, -0.35, 0.05]),
+        'strawberry': np.array([0.30,    -0.20,    0.0929]),
+        'banana':     np.array([-0.2754, -0.1896,  0.0929]),
+        'tomato':     np.array([0.00,    -0.35,    0.0929]),
     }
 
     # Key heights
@@ -72,7 +77,16 @@ class FruitSortingController:
     PICK_DEPTH_OVERRIDES = {
         "strawberry": {"pick_offset": 0.025, "pick_z_floor": 0.018},
     }
-    PLACE_Z = 0.10
+
+    # Per-fruit-type close-gripper target overrides. Banana skin is firm
+    # and the fruit is long, so it slipped at the global GRIP_CLOSE=0.90
+    # in the 2026-04-28 lab — bumped to 1.00 (full close, clamped at the
+    # max of the [0,1] gripper command range). The post-close readback
+    # still pins _held_grip to the actual settled jaw position, so harder
+    # fruits stall at their own thickness without sustained torque.
+    GRIP_CLOSE_OVERRIDES = {
+        "banana": 1.00,
+    }
 
     # Timing
     T_TRANSIT = 2.0
@@ -325,27 +339,31 @@ class FruitSortingController:
 
         elif self.state == State.DESCEND:
             if self._track_trajectory(t, gripper_val=GRIP_OPEN):
-                self._start_grip_interp(GRIP_CLOSE, duration=self.T_GRIP)
+                grip_close = self._grip_close_for(self.current_target['type'])
+                self._start_grip_interp(grip_close, duration=self.T_GRIP)
                 self.state = State.CLOSE_GRIPPER
-                self._print_state("Closing gripper (ramped)")
+                self._print_state(
+                    f"Closing gripper to {grip_close:.2f} (ramped)")
 
         elif self.state == State.CLOSE_GRIPPER:
             # Ramp gripper smoothly from OPEN to CLOSE (avoids -1289 overload).
             g = self._update_grip_interp()
             self._execute_position(ee_pos, g)
             if self._grip_interp_done():
+                grip_close = self._grip_close_for(self.current_target['type'])
                 # Read the ACTUAL settled gripper position and hold THAT
-                # value. If jaws stalled on the fruit, actual < 0.90 and
+                # value. If jaws stalled on the fruit, actual < target and
                 # we stop fighting the motor — no residual torque.
                 try:
                     _, actual = self.qarm.read_all()
                     self._held_grip = float(actual)
                 except Exception:
-                    self._held_grip = GRIP_CLOSE
+                    self._held_grip = grip_close
                 self._log("GRIPPER_READBACK",
-                           target=GRIP_CLOSE,
+                           type=self.current_target['type'],
+                           target=grip_close,
                            actual=self._held_grip,
-                           stall=(GRIP_CLOSE - self._held_grip))
+                           stall=(grip_close - self._held_grip))
                 ascend_pos = ee_pos.copy()
                 ascend_pos[2] = self.SAFE_Z
                 self._start_move(ee_pos, ascend_pos, self.T_APPROACH)
@@ -370,19 +388,37 @@ class FruitSortingController:
                         f"(#{self.sorted_count}) — holding up"
                     )
                 else:
-                    basket_above = self.target_basket.copy()
-                    basket_above[2] = self.SAFE_Z
+                    basket_above, used_above_z = self._find_reachable_basket_above()
+                    if basket_above is None:
+                        # No reachable transit pose above this basket. Bail to
+                        # DONE with the fruit still held — operator recovers
+                        # rather than dropping at the wrong height.
+                        print(f"  [warn] basket_above unreachable for "
+                              f"{self.current_target['type']} — aborting place")
+                        self.state = State.DONE
+                        return
                     self._start_move(ee_pos, basket_above, self.T_TRANSIT)
                     self.state = State.MOVE_TO_BASKET
-                    self._print_state(f"Moving to {self.current_target['type']} basket")
+                    self._print_state(
+                        f"Moving to {self.current_target['type']} basket "
+                        f"(transit z={used_above_z:.3f})")
 
         elif self.state == State.MOVE_TO_BASKET:
             if self._track_trajectory(t, gripper_val=self._held_grip):
-                place_pos = self.target_basket.copy()
-                place_pos[2] = self.PLACE_Z
+                # Pre-validate the descend target: if IK fails at the basket's
+                # nominal z, raise z by 1 cm steps until it solves. Without
+                # this guard, a None target_joints lets _track_trajectory
+                # short-circuit and the gripper opens at the previous (high)
+                # pose — banana basket at large -X reproduced this 2026-04-28.
+                place_pos, used_place_z = self._find_reachable_place_pos()
+                if place_pos is None:
+                    print(f"  [warn] no reachable place height for "
+                          f"{self.current_target['type']} basket — aborting")
+                    self.state = State.DONE
+                    return
                 self._start_move(ee_pos, place_pos, self.T_APPROACH)
                 self.state = State.DESCEND_PLACE
-                self._print_state("Descending to basket")
+                self._print_state(f"Descending to basket (z={used_place_z:.3f})")
 
         elif self.state == State.DESCEND_PLACE:
             if self._track_trajectory(t, gripper_val=self._held_grip):
@@ -415,10 +451,18 @@ class FruitSortingController:
 
         elif self.state == State.ASCEND_PLACE:
             if self._track_trajectory(t, gripper_val=GRIP_OPEN):
-                # Return home, then check for more fruits
                 self._traj_end_pos = None
-                self.state = State.GO_HOME
-                self._print_state("Returning home")
+                if not self.fruit_queue:
+                    # Single-pick path (picker_viewer's pick_single): skip the
+                    # HOME_POS detour and let the caller drive directly to
+                    # survey1 for the next photo. Saves ~3 s per pick.
+                    self.state = State.DONE
+                    self._print_state("Place complete — returning to caller")
+                else:
+                    # Multi-fruit autonomous path: still park at HOME between
+                    # fruits as a safety pose.
+                    self.state = State.GO_HOME
+                    self._print_state("Returning home for next fruit")
 
     def _start_move(self, start, end, duration):
         """Set up a new trajectory.
@@ -545,6 +589,53 @@ class FruitSortingController:
         joints, _ = self.qarm.read_all()
         return np.asarray(joints, dtype=float)
 
+    def _grip_close_for(self, fruit_type):
+        """Return the close-gripper target for `fruit_type`, falling back to
+        the global GRIP_CLOSE. Result is clamped to [0, 1] so future
+        overrides can't drive the servo past its endstop."""
+        target = self.GRIP_CLOSE_OVERRIDES.get(fruit_type, GRIP_CLOSE)
+        return float(min(max(target, 0.0), 1.0))
+
+    def _find_reachable_basket_above(self):
+        """Search for a transit pose above the active basket whose IK solves.
+
+        Tries SAFE_Z first, then steps up by 1 cm to SAFE_Z+0.10. Returns
+        (pos_xyz, z) on success, or (None, None) if every step fails.
+        Falling back to a higher Z covers baskets near the workspace edge
+        where the SAFE_Z plane intersects the IK-singular region.
+        """
+        if self.target_basket is None:
+            return None, None
+        Z_MAX = self.SAFE_Z + 0.10
+        z = float(self.SAFE_Z)
+        while z <= Z_MAX + 1e-6:
+            candidate = self.target_basket.copy()
+            candidate[2] = z
+            if self._ik_safe(candidate) is not None:
+                return candidate, z
+            z += 0.01
+        return None, None
+
+    def _find_reachable_place_pos(self):
+        """Search for the lowest reachable release pose at or above the
+        basket's taught z, capped at SAFE_Z so the fruit is never dropped
+        from above transit height. Returns (pos_xyz, z) or (None, None).
+
+        Fixes the failure mode where a None IK at the taught z let the
+        FSM short-circuit DESCEND_PLACE and open the gripper at the prior
+        (transit) pose.
+        """
+        if self.target_basket is None:
+            return None, None
+        z = float(self.target_basket[2])
+        while z <= self.SAFE_Z + 1e-6:
+            candidate = self.target_basket.copy()
+            candidate[2] = z
+            if self._ik_safe(candidate) is not None:
+                return candidate, z
+            z += 0.01
+        return None, None
+
     def _ik_safe(self, target_pos):
         """Try IK for target_pos. Returns joints array or None on failure
         (IK divergence, unreachable, or joint-limit violation).
@@ -631,10 +722,12 @@ def stateflow_select(joints_cur):
 
 
 def stateflow_close_grip():
-    """Ramp gripper closed, return settled value. Blocking."""
+    """Ramp gripper closed, return settled value. Blocking.
+    Uses per-fruit-type override when current_target is set."""
     c = _stateflow_ctx.get('controller')
     if c is None: return 0.15
-    return c.set_gripper_ramp(GRIP_CLOSE)
+    fruit_type = (c.current_target or {}).get('type')
+    return c.set_gripper_ramp(c._grip_close_for(fruit_type))
 
 
 def stateflow_open_grip():

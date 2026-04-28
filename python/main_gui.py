@@ -42,6 +42,7 @@ import os
 import sys
 import threading
 import time
+from datetime import datetime
 
 import numpy as np
 import cv2
@@ -64,6 +65,7 @@ from camera import QArmCamera
 from sorting_controller import (FruitSortingController,
                                   GRIP_OPEN, GRIP_CLOSE)
 from qarm_kinematics import forward_kinematics, inverse_kinematics
+from trace_logger import TraceLogger
 import survey_capture as _survey_capture_module
 import calibrate_closed_loop as _ccl_module
 from picker_viewer import _pick_category
@@ -98,6 +100,7 @@ ESTOP_FREEZE_INTERVAL = 0.01    # seconds between freeze repeats (=300 ms total)
 REPO_ROOT = os.path.dirname(_HERE)
 DEFAULT_SESSION_CAL = os.path.join(REPO_ROOT, "session_cal.json")
 DEFAULT_TEACH_POINTS = os.path.join(REPO_ROOT, "teach_points.json")
+LOG_DIR = os.path.join(REPO_ROOT, "logs")
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +117,20 @@ class FruitSortingGUI:
         self.session_cal = SessionCal.load(DEFAULT_SESSION_CAL)
         with open(DEFAULT_TEACH_POINTS) as f:
             self.teach_points = json.load(f)
+
+        # --- trace log: one file per GUI session, written next to the
+        #     teach_points trace logs (logs/gui_trace_<YYYYMMDD>_<HHMMSS>.log).
+        #     Closed in _on_close so SESSION_END lands even on window-X exit.
+        log_path = os.path.join(
+            LOG_DIR,
+            f"gui_trace_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+        self.trace = TraceLogger(log_path)
+        self.trace.log("GUI_INIT",
+                        cam_h=self.session_cal.camera_height_above_table_m,
+                        chess_origin=self.session_cal.chess_origin_in_base_m,
+                        homography_rms=self.session_cal.homography_reproj_rms_px)
+        print(f"trace log: {log_path}")
+
         print("connecting to QArm + D415...")
         self.driver = QArmDriver()
         self.driver.connect()
@@ -121,7 +138,7 @@ class FruitSortingGUI:
         self.camera = QArmCamera()
         self.camera.open()
         self.controller = FruitSortingController(
-            self.driver, camera=self.camera)
+            self.driver, camera=self.camera, logger=self.trace)
 
         # --- state ---
         self.mode = "manual"
@@ -644,6 +661,8 @@ class FruitSortingGUI:
         self._stop_threads.set()
         self.abort_event.set()
         self._uninstall_hooks()
+        try: self.trace.close()
+        except Exception: pass
         try: self.camera.close()
         except Exception: pass
         try: self.driver.card.close()
