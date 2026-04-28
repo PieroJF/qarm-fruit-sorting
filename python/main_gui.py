@@ -29,9 +29,9 @@ Known limitations:
     but it CANNOT interrupt a slow_move_to_joints() that is already
     inside its 200-step interpolation loop. The arm finishes the current
     segment (~3-4 s worst case) before the abort takes effect.
-  - The 30 fps background camera reader and the auto-mode capture_fruits()
-    both call camera.read() — frame drops are possible but the camera
-    driver tolerates concurrent reads.
+  - The background camera reader pauses automatically during capture_fruits()
+    to avoid concurrent camera reads (the Quanser Video3D driver is not
+    thread-safe for concurrent reads).
   - No preflight; assumes session_cal.json is fresh and chess origin is
     correct. Run main_final.py first if you want the safety checks.
 """
@@ -64,81 +64,16 @@ from camera import QArmCamera
 from sorting_controller import (FruitSortingController,
                                   GRIP_OPEN, GRIP_CLOSE)
 from qarm_kinematics import forward_kinematics, inverse_kinematics
-from calibrate_closed_loop import slow_move_to_joints
 import survey_capture as _survey_capture_module
 import calibrate_closed_loop as _ccl_module
-from survey_capture import capture_fruits
 from picker_viewer import _pick_category
 
 
-# ---------------------------------------------------------------------------
-# Detection overlay — colors mirror picker_viewer._TYPE_COLORS so the
-# on-screen bboxes match what the operator sees in the cv2 picker.
-# ---------------------------------------------------------------------------
 _TYPE_COLORS = {
     "banana":     (0, 255, 255),    # yellow (BGR)
     "tomato":     (0, 0, 255),      # red
     "strawberry": (200, 100, 255),  # pink-magenta
 }
-
-# Module-level GUI reference so the monkey-patched capture_fruits hook
-# can find the GUI without passing it through the SDK call chain.
-_GUI_INSTANCE = None
-_ORIG_CAPTURE_FRUITS = _survey_capture_module.capture_fruits
-
-
-def _capture_fruits_with_gui_hook(driver, camera, session_cal):
-    """Wraps survey_capture.capture_fruits so every capture (manual
-    Refresh AND every iteration inside _pick_category) updates the GUI's
-    overlay state."""
-    dets, diag = _ORIG_CAPTURE_FRUITS(driver, camera, session_cal)
-    gui = _GUI_INSTANCE
-    if gui is not None:
-        gui._on_capture(diag.get("color_frame"), dets)
-    return dets, diag
-
-
-# Install the hook for the lifetime of the process. _pick_category
-# imports capture_fruits at call time, so this monkey-patch reaches it.
-_survey_capture_module.capture_fruits = _capture_fruits_with_gui_hook
-
-
-# ---------------------------------------------------------------------------
-# Abort-aware slow_move_to_joints — replaces the project's helper for this
-# process so capture_fruits' "go to survey1" 3 s motion (and any other
-# caller) can be interrupted by the GUI's E-STOP within ~15 ms.
-# ---------------------------------------------------------------------------
-_ORIG_SLOW_MOVE = _ccl_module.slow_move_to_joints
-
-
-def _slow_move_with_abort(q, target, grip, seconds=3.0, steps=200):
-    gui = _GUI_INSTANCE
-    if gui is None:
-        return _ORIG_SLOW_MOVE(q, target, grip, seconds, steps)
-    cj, cg = q.read_all()
-    cj = np.asarray(cj, dtype=float); cg = float(cg)
-    target = np.asarray(target, dtype=float); grip = float(grip)
-    for i in range(1, steps + 1):
-        if gui.abort_event.is_set():
-            return
-        a = i / steps
-        s = 3 * a * a - 2 * a * a * a
-        q.set_joints_and_gripper(cj + s * (target - cj),
-                                  cg + s * (grip - cg))
-        time.sleep(seconds / steps)
-    for _ in range(20):
-        if gui.abort_event.is_set():
-            return
-        q.set_joints_and_gripper(target, grip)
-        time.sleep(0.05)
-
-
-_ccl_module.slow_move_to_joints = _slow_move_with_abort
-# Re-publish so any module that already imported the symbol via
-# `from calibrate_closed_loop import slow_move_to_joints` BEFORE this
-# point keeps working (their local binding still points at the
-# original — but main_gui imports nothing that pre-binds it).
-slow_move_to_joints = _slow_move_with_abort
 
 
 # ---------------------------------------------------------------------------
@@ -193,16 +128,14 @@ class FruitSortingGUI:
         self.busy = False
         self.busy_lock = threading.Lock()
         self.abort_event = threading.Event()
+        self._camera_paused = threading.Event()
         self._latest_frame = None
         self._frame_lock = threading.Lock()
-        # Detection-overlay state populated by _capture_fruits_with_gui_hook.
         self._last_capture_frame = None
         self._last_detections: list = []
         self._last_capture_time = 0.0
 
-        # Register self for the monkey-patched capture_fruits hook.
-        global _GUI_INSTANCE
-        _GUI_INSTANCE = self
+        self._install_hooks()
 
         # --- UI ---
         self.root = tk.Tk()
@@ -219,6 +152,35 @@ class FruitSortingGUI:
 
         # schedule periodic video updates
         self.root.after(int(1000 / UI_REFRESH_HZ), self._update_video)
+
+    # -----------------------------------------------------------------
+    # Runtime monkey-patches (installed in __init__, cleaned up on close)
+    # -----------------------------------------------------------------
+
+    def _install_hooks(self):
+        self._orig_capture_fruits = _survey_capture_module.capture_fruits
+        self._orig_slow_move = _ccl_module.slow_move_to_joints
+        gui = self
+
+        def _capture_hook(driver, camera, session_cal):
+            gui._camera_paused.set()
+            try:
+                dets, diag = gui._orig_capture_fruits(driver, camera, session_cal)
+            finally:
+                gui._camera_paused.clear()
+            gui._on_capture(diag.get("color_frame"), dets)
+            return dets, diag
+
+        def _slow_move_hook(q, target, grip, seconds=3.0, steps=200):
+            gui._safe_move_to_joints(target, grip,
+                                     seconds=seconds, steps=steps)
+
+        _survey_capture_module.capture_fruits = _capture_hook
+        _ccl_module.slow_move_to_joints = _slow_move_hook
+
+    def _uninstall_hooks(self):
+        _survey_capture_module.capture_fruits = self._orig_capture_fruits
+        _ccl_module.slow_move_to_joints = self._orig_slow_move
 
     # -----------------------------------------------------------------
     # UI construction
@@ -376,6 +338,9 @@ class FruitSortingGUI:
     def _camera_loop(self):
         period = 1.0 / CAMERA_LOOP_HZ
         while not self._stop_threads.is_set():
+            if self._camera_paused.is_set():
+                time.sleep(period)
+                continue
             try:
                 color, _ = self.camera.read()
                 with self._frame_lock:
@@ -599,7 +564,7 @@ class FruitSortingGUI:
     def _refresh_detect(self):
         self.abort_event.clear()
         def fn():
-            dets, diag = capture_fruits(
+            dets, diag = _survey_capture_module.capture_fruits(
                 self.driver, self.camera, self.session_cal)
             counts = {}
             for d in dets:
@@ -678,6 +643,7 @@ class FruitSortingGUI:
     def _on_close(self):
         self._stop_threads.set()
         self.abort_event.set()
+        self._uninstall_hooks()
         try: self.camera.close()
         except Exception: pass
         try: self.driver.card.close()
