@@ -135,8 +135,8 @@ class VoiceController:
         vosk.SetLogLevel(-1)
 
         self._root = root
-        self._command_map = command_map
-        self._status_label = status_label
+        self._commands = command_map
+        self._label = status_label
         self._stop_event = threading.Event()
 
         # Load Vosk model and recogniser.
@@ -156,6 +156,7 @@ class VoiceController:
 
         # State dict for parse_command.
         self._state: Dict[str, object] = {"phase": "idle", "wake_time": 0.0}
+        self._update_status("\U0001f3a4 Voice", "grey")
 
         # Start daemon listener thread.
         self._thread = threading.Thread(target=self._listen_loop, daemon=True)
@@ -208,9 +209,9 @@ class VoiceController:
                     if elapsed > WAKE_TIMEOUT_S:
                         self._state["phase"] = "idle"
                         was_idle = True
-                        self._update_status("???", "orange")
-                        # Reset label after a beat.
-                        self._root.after(1500, lambda: self._update_status("", "white"))
+                        self._update_status("\U0001f3a4 ???", "#cc0000")
+                        self._root.after(1000, lambda: self._update_status(
+                            "\U0001f3a4 Voice", "grey"))
                 continue
 
             for word in text.split():
@@ -219,7 +220,7 @@ class VoiceController:
                 # Beep on first transition to awaiting.
                 if self._state["phase"] == "awaiting" and was_idle:
                     self._beep()
-                    self._update_status("listening…", "yellow")
+                    self._update_status("\U0001f3a4 Listening...", "#cc8800")
                     was_idle = False
                 elif self._state["phase"] == "idle":
                     was_idle = True
@@ -242,16 +243,17 @@ class VoiceController:
 
     def _dispatch(self, cmd: str) -> None:
         """Look up callback, update status label, invoke via root.after."""
-        callback = self._command_map.get(cmd)
+        callback = self._commands.get(cmd)
         if callback is None:
             return
-        self._update_status(f'"{cmd}" ✓', "green")
+        self._update_status(f'\U0001f3a4 "{cmd}" ✓', "#008800")
         self._root.after(0, callback)
-        self._root.after(1500, lambda: self._update_status("", "white"))
+        self._root.after(1500, lambda: self._update_status(
+            "\U0001f3a4 Voice", "grey"))
 
     def _update_status(self, text: str, fg: str) -> None:
         """Thread-safe label update via root.after."""
-        if self._status_label is not None:
-            self._root.after(0, lambda: self._status_label.configure(
+        if self._label is not None:
+            self._root.after(0, lambda: self._label.configure(
                 text=text, foreground=fg
             ))
