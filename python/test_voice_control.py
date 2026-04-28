@@ -130,6 +130,90 @@ def test_grammar_words_matches_spec():
     return name, True, f"GRAMMAR_WORDS = {sorted(GRAMMAR_WORDS)}"
 
 
+# ── Dispatch + VoiceController integration tests ─────────────────
+
+def test_dispatch_calls_callback():
+    name = "dispatch_calls_callback"
+    called = {"cmd": None}
+
+    class FakeRoot:
+        def after(self, ms, fn):
+            fn()
+
+    from voice_control import VoiceController
+    vc = object.__new__(VoiceController)
+    vc._root = FakeRoot()
+    vc._label = None
+    vc._commands = {
+        "strawberry": lambda: called.__setitem__("cmd", "strawberry"),
+    }
+    vc._state = {"phase": "idle", "wake_time": 0.0}
+
+    vc._dispatch("strawberry")
+    assert called["cmd"] == "strawberry"
+    return name, True, "callback invoked via _dispatch"
+
+
+def test_dispatch_ignores_unknown_command():
+    name = "dispatch_ignores_unknown"
+
+    class FakeRoot:
+        def after(self, ms, fn):
+            fn()
+
+    from voice_control import VoiceController
+    vc = object.__new__(VoiceController)
+    vc._root = FakeRoot()
+    vc._label = None
+    vc._commands = {}
+    vc._state = {"phase": "idle", "wake_time": 0.0}
+
+    vc._dispatch("nonexistent")  # must not raise
+    return name, True, "unknown command silently ignored"
+
+
+def test_update_status_with_label():
+    name = "update_status_with_label"
+    updates = []
+
+    class FakeRoot:
+        def after(self, ms, fn):
+            fn()
+
+    class FakeLabel:
+        def configure(self, **kw):
+            updates.append(kw)
+
+    from voice_control import VoiceController
+    vc = object.__new__(VoiceController)
+    vc._root = FakeRoot()
+    vc._label = FakeLabel()
+    vc._commands = {}
+
+    vc._update_status("\U0001f3a4 Voice", "grey")
+    assert len(updates) == 1
+    assert updates[0]["text"] == "\U0001f3a4 Voice"
+    assert updates[0]["foreground"] == "grey"
+    return name, True, "label updated with text + color"
+
+
+def test_update_status_without_label():
+    name = "update_status_no_label"
+
+    class FakeRoot:
+        def after(self, ms, fn):
+            fn()
+
+    from voice_control import VoiceController
+    vc = object.__new__(VoiceController)
+    vc._root = FakeRoot()
+    vc._label = None
+    vc._commands = {}
+
+    vc._update_status("test", "red")  # must not raise
+    return name, True, "no-op when label is None"
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -144,6 +228,10 @@ TESTS = [
     test_repeated_robot_resets_timer,
     test_all_commands_recognized,
     test_grammar_words_matches_spec,
+    test_dispatch_calls_callback,
+    test_dispatch_ignores_unknown_command,
+    test_update_status_with_label,
+    test_update_status_without_label,
 ]
 
 
