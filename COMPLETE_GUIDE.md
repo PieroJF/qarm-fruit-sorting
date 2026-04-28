@@ -256,7 +256,7 @@ The script will:
 | `SAFE_Z` | 0.20 m | Safe transit height |
 | `APPROACH_Z` | 0.15 m | Hover height above fruit |
 | `PICK_Z` | 0.02 m | Pick height |
-| `PLACE_Z` | 0.10 m | Release height above basket |
+| *(dynamic)* | basket Z..SAFE_Z | Release height — IK-searched from basket's taught Z upward |
 | `T_TRANSIT` | 2.0 s | Duration for long moves |
 | `T_APPROACH` | 1.0 s | Duration for approach/retreat |
 | `T_PICK` | 0.8 s | Duration for final descent |
