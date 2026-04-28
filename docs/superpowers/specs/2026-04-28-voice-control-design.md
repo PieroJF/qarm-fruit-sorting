@@ -30,7 +30,7 @@ Wake word: **"robot"**. After the wake word is detected, the system listens for 
 | "tomato" | Pick one tomato | `_auto_one("tomato")` |
 | "all" | Pick all fruits | `_auto_all()` |
 | "stop" | Emergency stop | `_emergency_stop()` |
-| "home" | Go to home/survey pose | `_goto_survey1()` |
+| "home" | Go to survey1 (safe camera pose) | `_goto_survey1()` |
 | "refresh" | Re-capture fruit detection | `_refresh_detect()` |
 | "survey" | Go to survey pose | `_goto_survey1()` |
 
@@ -51,7 +51,7 @@ Vosk grammar definition:
 Single class `VoiceController`:
 
 ```
-VoiceController(root, command_map, model_path="models/vosk-model-small-en-us")
+VoiceController(root, command_map, model_path="models/vosk-model-small-en-us-0.15")
 ├── __init__()        — load Vosk model, open PyAudio stream, start daemon thread
 ├── start()           — begin listening (called from __init__)
 ├── stop()            — set stop_event, close stream, terminate PyAudio
@@ -123,7 +123,7 @@ _on_close()
 
 - Daemon thread dies automatically on process exit.
 - GUI callbacks run on the main thread via `root.after(0, ...)` — thread-safe.
-- `_busy_guard` serialization applies: if the robot is mid-action, the voice command is rejected the same way a duplicate button click would be.
+- `_busy_guard` serialization applies to all commands **except "stop"**: if the robot is mid-action, picking/navigation voice commands are rejected the same way a duplicate button click would be. `_emergency_stop()` bypasses `_busy_guard` by design — it fires immediately regardless of busy state, matching the GUI's EMERGENCY STOP button behavior (`main_gui.py:229`).
 
 ### 5.4 Wake Word State Machine
 
@@ -142,7 +142,7 @@ Exception: "stop" in any state → DISPATCH immediately
 
 ## 6. Visual Feedback
 
-A `tk.Label` in the GUI toolbar area:
+A `tk.Label` placed below the video feed in the `left` frame (`main_gui.py:210-222`), directly under `self.video_label`. This keeps voice status visible alongside the camera feed without cluttering the controls panel:
 
 | State | Text | Color |
 |---|---|---|
@@ -154,7 +154,7 @@ A `tk.Label` in the GUI toolbar area:
 
 All label updates go through `root.after(0, ...)` from the voice thread.
 
-Audible beep on wake word detection: `winsound.Beep(1000, 100)` — confirms "robot" was heard when the operator is not looking at the screen.
+Audible beep on wake word detection via `winsound.PlaySound` with `SND_ASYNC` flag (non-blocking) using a short system beep WAV — confirms "robot" was heard when the operator is not looking at the screen. Avoids `winsound.Beep()` which blocks the calling thread for the beep duration and would cause the voice thread to miss audio input.
 
 ## 7. Dependencies
 
@@ -163,7 +163,7 @@ Audible beep on wake word detection: `winsound.Beep(1000, 100)` — confirms "ro
 | `vosk` | Offline speech recognition | `pip install vosk` |
 | `pyaudio` | Microphone capture | `pip install pyaudio` |
 
-Model: `vosk-model-small-en-us` (~40MB), placed at `models/vosk-model-small-en-us/`. Downloaded once manually or via a setup script.
+Model: **`vosk-model-small-en-us-0.15`** (~40MB), downloaded from https://alphacephei.com/vosk/models and extracted to `models/vosk-model-small-en-us-0.15/` at the repo root. The `models/` directory does not exist yet and must be created. Downloaded once manually or via a setup script.
 
 Both packages are **optional** — not added to a mandatory requirements file. Voice is opt-in.
 
