@@ -524,7 +524,8 @@ fsm_states = [
     ("MOVE_TO_BASKET", "Navigate to category basket XYZ"),
     ("DESCEND_PLACE",  "Lower into basket"),
     ("OPEN_GRIPPER",   "Release fruit"),
-    ("ASCEND_PLACE",   "Lift clear, loop or DONE"),
+    ("ASCEND_PLACE",   "Lift clear, loop to SELECT_FRUIT"),
+    ("DONE",           "All fruits sorted — return home"),
 ]
 for state, desc in fsm_states:
     add_paragraph(tf_fsm, f"  {state:<17s} {desc}", 8, color=WHITE,
@@ -993,8 +994,6 @@ future_items = [
      "Custom compliant fingers for delicate fruits"),
     ("Multi-Arm Coordination",
      "Parallel sorting for higher throughput"),
-    ("Velocity-Limited Profiles",
-     "Trapezoidal trajectories with actuator limits"),
 ]
 
 for title, desc in future_items:
