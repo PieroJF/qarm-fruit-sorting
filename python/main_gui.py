@@ -70,6 +70,12 @@ import survey_capture as _survey_capture_module
 import calibrate_closed_loop as _ccl_module
 from picker_viewer import _pick_category
 
+try:
+    from voice_control import VoiceController
+    _HAS_VOICE = True
+except ImportError:
+    _HAS_VOICE = False
+
 
 _TYPE_COLORS = {
     "banana":     (0, 255, 255),    # yellow (BGR)
@@ -167,6 +173,28 @@ class FruitSortingGUI:
             target=self._camera_loop, daemon=True)
         self._camera_thread.start()
 
+        # --- voice control (optional) ---
+        if _HAS_VOICE:
+            command_map = {
+                "strawberry": lambda: self._auto_one("strawberry"),
+                "banana":     lambda: self._auto_one("banana"),
+                "tomato":     lambda: self._auto_one("tomato"),
+                "all":        self._auto_all,
+                "stop":       self._emergency_stop,
+                "home":       self._goto_survey1,
+                "refresh":    self._refresh_detect,
+                "survey":     self._goto_survey1,
+            }
+            try:
+                self.voice = VoiceController(
+                    self.root, command_map,
+                    status_label=self.voice_label)
+            except Exception as ex:
+                print(f"voice control disabled: {ex}")
+                self.voice = None
+        else:
+            self.voice = None
+
         # schedule periodic video updates
         self.root.after(int(1000 / UI_REFRESH_HZ), self._update_video)
 
@@ -220,6 +248,10 @@ class FruitSortingGUI:
                                        bg="black")
         self.video_label.image = self._blank_image  # GC anchor
         self.video_label.pack()
+
+        self.voice_label = tk.Label(left, text="", font=("Arial", 10),
+                                    bg="black", anchor="w")
+        self.voice_label.pack(fill="x")
 
         # right: controls
         right = ttk.Frame(root, padding=8)
@@ -661,6 +693,9 @@ class FruitSortingGUI:
         self._stop_threads.set()
         self.abort_event.set()
         self._uninstall_hooks()
+        if self.voice:
+            try: self.voice.stop()
+            except Exception: pass
         try: self.trace.close()
         except Exception: pass
         try: self.camera.close()
