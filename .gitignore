@@ -29,6 +29,11 @@ figures/live_*.png
 figures/preview_*.png
 figures/detection_result.png
 
+# Large trial-recording videos in Test_result/ (share via cloud, not git)
+Test_result/auto_test_1.mp4
+Test_result/rubic_test_1.mp4
+Test_result/single_strawberry.mp4
+
 # OS
 Thumbs.db
 .DS_Store
